@@ -1,0 +1,40 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "debug_squid_server",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/bin/opt/squid/bin/squid-server",
+            "args": [
+                "--console",
+                "--config",
+                "${workspaceFolder}/bin/opt/squid/etc/squid_server.conf"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "SQUID_SERVER_STAGE_ROOT",
+                    "value": "${workspaceFolder}/bin"
+                }
+            ],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "preLaunchTask": "build_squid_server"
+        },
+        {
+            "name": "debug_squid_server_tests",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/bin/opt/squid/bin/squid-server-tests",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "preLaunchTask": "build_squid_server_tests"
+        }
+    ]
+}
