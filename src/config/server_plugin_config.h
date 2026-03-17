@@ -32,6 +32,9 @@
 /* At most one plugin per assignable port (1-15). */
 #define server_plugin_mapping_max server_plugin_port_max
 
+/* Maximum byte length of a serial device path (including NUL). */
+#define server_serial_device_path_max 64
+
 /* One "plugin <port> <path>" line from the config file. */
 struct server_plugin_mapping {
     uint8_t port_number;
@@ -45,6 +48,13 @@ struct server_plugin_config_file {
     /* Optional per-port plugin assignments. */
     struct server_plugin_mapping mappings[server_plugin_mapping_max];
     size_t mapping_count;
+    /* Serial transport settings.  device is empty when local transport is used. */
+    char serial_device[server_serial_device_path_max];
+    int  serial_baud;
+    int  serial_databits;  /* 7 or 8 */
+    int  serial_parity;    /* 0=none  1=even  2=odd */
+    int  serial_stopbits;  /* 1 or 2 */
+    int  serial_flow;      /* 0=none  1=rtscts  2=xonxoff */
 };
 
 /* Zero-initialise and set defaults for a config struct. */

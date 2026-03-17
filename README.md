@@ -6,7 +6,7 @@ A lightweight, plugin-based Linux server that hosts the [libsquid](https://githu
 
 ## Overview
 
-squid-server bridges the squid protocol to your application code through a clean shared-library plugin API. It handles all process lifecycle concerns — daemonization, signal handling, logging, and plugin loading — so each plugin can focus entirely on packet handling.
+squid-server bridges the squid protocol to your application code through a clean shared-library plugin API. It handles all process lifecycle concerns — daemonization, signal handling, logging, transport setup, and plugin loading — so each plugin can focus entirely on packet handling.
 
 The server supports two startup modes:
 
@@ -21,6 +21,8 @@ The server supports two startup modes:
 
 - **Plugin-based dispatch** — each of the 16 squid ports (0–15) can be wired to a separate shared library
 - **System plugin** — port 0 is reserved for the built-in `squidsys` plugin; ports 1–15 are available for application plugins
+- **Dual transport** — communicate over a Unix domain socket (local testing) or a POSIX serial port (hardware deployment), selected by configuration
+- **Full packet dispatch** — the runtime loop drives the libsquid engine via `snet_burst()` and routes received packets to the registered plugin on each port
 - **Dual logging** — stdout in console mode, syslog (`LOG_DAEMON`) in daemon mode
 - **Clean shutdown** — `SIGTERM` and `SIGINT` trigger graceful plugin teardown
 - **Staged build tree** — the build produces a deployment-ready layout under `bin/opt/squid/` for local development
@@ -53,14 +55,16 @@ After a successful build the staged tree is ready at `bin/opt/squid/`:
 ```
 bin/opt/squid/
 ├── bin/
-│   └── squid-server          # server executable
+│   └── squid-server              # server executable
 ├── etc/
-│   └── squid_server.conf     # configuration file
+│   ├── squid_server.conf         # default configuration
+│   ├── squid_server_local.conf   # local Unix-socket transport (development)
+│   └── squid_server_serial.conf  # serial port transport template
 ├── include/squid_server/
-│   └── plugin_api.h          # public plugin API header
+│   └── plugin_api.h              # public plugin API header
 └── lib/plugins/
-    ├── libecho.so             # echo reference plugin
-    └── libsquidsys.so         # system plugin (port 0)
+    ├── libecho.so                 # echo reference plugin
+    └── libsquidsys.so             # system plugin (port 0)
 ```
 
 ---
@@ -73,22 +77,34 @@ bin/opt/squid/
 SQUID_SERVER_STAGE_ROOT=./bin \
   ./bin/opt/squid/bin/squid-server \
   --console \
-  --config ./bin/opt/squid/etc/squid_server.conf
+  --config ./bin/opt/squid/etc/squid_server_local.conf
 ```
 
 Console mode writes log lines to standard output:
 
 ```
 [info] squid-server starting in console mode with 16 plugin slots and 2 loaded plugins
+[info] waiting for client on /tmp/squid_server.sock
+[info] client connected
+[info] squid link established
 ```
+
+### Serial mode
+
+```sh
+./bin/opt/squid/bin/squid-server \
+  --console \
+  --config ./bin/opt/squid/etc/squid_server_serial.conf
+```
+
+Edit `squid_server_serial.conf` to set the correct device and baud rate before running.
 
 ### Daemon mode
 
 ```sh
-SQUID_SERVER_STAGE_ROOT=./bin \
-  ./bin/opt/squid/bin/squid-server \
+./bin/opt/squid/bin/squid-server \
   --daemon \
-  --config ./bin/opt/squid/etc/squid_server.conf
+  --config /opt/squid/etc/squid_server.conf
 ```
 
 Daemon mode detaches from the terminal and routes all log output to syslog under the identifier `squid-server`. Check messages with:
@@ -123,31 +139,81 @@ The default configuration file is `/opt/squid/etc/squid_server.conf`. Override t
 ```
 # lines beginning with # are comments
 
-# path to the shared library for port 0 (required)
+# path to the shared library for port 0 (optional — defaults to /opt/squid/lib/plugins/libsquidsys.so)
 system_plugin <path>
 
 # attach a shared library to a port in the range 1-15
 plugin <port> <path>
+
+# serial transport — omit serial_device to use the local Unix-socket transport instead
+serial_device <device>          # e.g. /dev/ttyS0 or /dev/ttyUSB0
+serial_baud   <rate>            # 1200 2400 4800 9600 19200 38400 57600 115200  (default: 9600)
+serial_databits <7|8>           # (default: 8)
+serial_parity   <none|even|odd> # (default: none)
+serial_stopbits <1|2>           # (default: 1)
+serial_flow     <none|rtscts|xonxoff> # (default: none)
 ```
 
-### Example
+### Transport selection
+
+The transport is chosen automatically based on whether `serial_device` is present in the configuration file:
+
+| Configuration | Transport used |
+|---------------|---------------|
+| No `serial_device` line | Unix domain socket at `/tmp/squid_server.sock` (local transport) |
+| `serial_device <path>` present | POSIX serial port at the given device path |
+
+### Local transport example
 
 ```
-# squid_server configuration
+# squid_server_local.conf
 
-# port 0 is reserved for the internal squidsys plugin
 system_plugin /opt/squid/lib/plugins/libsquidsys.so
+plugin 1 /opt/squid/lib/plugins/libecho.so
+```
 
-# attach the echo plugin to port 1
+### Serial transport examples
+
+**8N1, no flow control (most common):**
+```
+serial_device /dev/ttyUSB0
+serial_baud   9600
+
+system_plugin /opt/squid/lib/plugins/libsquidsys.so
+plugin 1 /opt/squid/lib/plugins/libecho.so
+```
+
+**8N2 with RTS/CTS (retro hardware handshake):**
+```
+serial_device   /dev/ttyS0
+serial_baud     9600
+serial_stopbits 2
+serial_flow     rtscts
+
+system_plugin /opt/squid/lib/plugins/libsquidsys.so
+plugin 1 /opt/squid/lib/plugins/libecho.so
+```
+
+**7E1 with XON/XOFF (older terminal-style devices):**
+```
+serial_device   /dev/ttyS0
+serial_baud     2400
+serial_databits 7
+serial_parity   even
+serial_flow     xonxoff
+
+system_plugin /opt/squid/lib/plugins/libsquidsys.so
 plugin 1 /opt/squid/lib/plugins/libecho.so
 ```
 
 ### Rules
 
-- `system_plugin` must appear at most once; it sets the shared library for port 0
+- `system_plugin` may appear at most once; defaults to `libsquidsys.so` if omitted
 - `plugin` lines set user plugins for ports 1–15
+- Each serial directive may appear at most once
+- `serial_databits` must be `7` or `8`; `serial_parity` must be `none`, `even`, or `odd`; `serial_stopbits` must be `1` or `2`; `serial_flow` must be `none`, `rtscts`, or `xonxoff`
 - Duplicate port assignments are rejected at startup
-- Paths longer than 512 characters are rejected
+- Paths longer than 512 characters are rejected; device paths longer than 64 characters are rejected
 - Unknown directives cause startup to abort with an error
 
 ---
@@ -253,7 +319,7 @@ const struct server_plugin *get_server_plugin(void)
 }
 ```
 
-Compile as a shared library and register the path in `squid_server.conf`:
+Compile as a shared library and register the path in the configuration file:
 
 ```
 plugin 2 /opt/squid/lib/plugins/libmyplugin.so
@@ -288,8 +354,6 @@ plugin 2 /opt/squid/lib/plugins/libmyplugin.so
 ctest --test-dir build --output-on-failure
 ```
 
-All six tests cover argument parsing, unknown-flag rejection, plugin registry operations, and configuration file parsing.
-
 ---
 
 ## Known limitations
@@ -297,7 +361,8 @@ All six tests cover argument parsing, unknown-flag rejection, plugin registry op
 - No PID file — `/var/run/squid-server.pid` is not created; process tracking relies on the service manager or `pgrep`
 - No `SIGHUP` reload — configuration changes require a restart
 - No systemd `sd_notify` integration — `Type=notify` is not supported; use `Type=simple`
-- The runtime loop polls with `sleep(1)` rather than using `sigsuspend`
+- One client at a time — the local transport accepts a single connection; the serial transport is point-to-point by nature
+- No per-plugin error recovery — a plugin that crashes takes down the whole process
 
 ---
 

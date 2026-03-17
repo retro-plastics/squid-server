@@ -25,6 +25,9 @@
 
 #include "runtime/server_runtime.h"
 
+#include "transport/local/local_transport.h"
+#include "transport/serial/serial_transport.h"
+
 #include "log/server_log.h"
 
 #include <squid/snet.h>
@@ -429,45 +432,81 @@ int run_server_runtime(struct server_runtime *runtime)
     );
     write_server_log(server_log_level_info, startup_message);
 
-    /* Set up the local Unix-socket transport and wait for a client. */
-    if (local_transport_listen(
-        &runtime->transport,
-        local_transport_default_socket_path
-    ) != 0) {
-        write_server_log_errno(
-            server_log_level_error,
-            "failed to create local transport socket",
-            errno
-        );
-        unload_server_plugins(&runtime->plugin_loader, &runtime->plugin_registry);
-        close_server_log();
-        return 1;
+    /* Set up transport: serial when serial_device is configured, local otherwise. */
+    if (runtime->plugin_config.serial_device[0] != '\0') {
+        char open_msg[128];
+
+        snprintf(open_msg, sizeof(open_msg),
+            "opening serial transport on %s at %d baud",
+            runtime->plugin_config.serial_device,
+            runtime->plugin_config.serial_baud);
+        write_server_log(server_log_level_info, open_msg);
+
+        {
+            struct serial_transport_config serial_cfg;
+            serial_cfg.device   = runtime->plugin_config.serial_device;
+            serial_cfg.baud     = runtime->plugin_config.serial_baud;
+            serial_cfg.databits = runtime->plugin_config.serial_databits;
+            serial_cfg.parity   = runtime->plugin_config.serial_parity;
+            serial_cfg.stopbits = runtime->plugin_config.serial_stopbits;
+            serial_cfg.flow     = runtime->plugin_config.serial_flow;
+
+            if (serial_transport_open(
+                &runtime->serial_transport,
+                &serial_cfg
+            ) != 0) {
+                write_server_log_errno(
+                    server_log_level_error,
+                    "failed to open serial transport",
+                    errno
+                );
+                unload_server_plugins(&runtime->plugin_loader, &runtime->plugin_registry);
+                close_server_log();
+                return 1;
+            }
+        }
+
+        serial_transport_activate(&runtime->serial_transport);
+        snet_init(&runtime->serial_transport.base.platform, &squid_timing);
+    } else {
+        if (local_transport_listen(
+            &runtime->transport,
+            local_transport_default_socket_path
+        ) != 0) {
+            write_server_log_errno(
+                server_log_level_error,
+                "failed to create local transport socket",
+                errno
+            );
+            unload_server_plugins(&runtime->plugin_loader, &runtime->plugin_registry);
+            close_server_log();
+            return 1;
+        }
+
+        {
+            char listen_msg[128];
+            snprintf(listen_msg, sizeof(listen_msg),
+                "waiting for client on %s", local_transport_default_socket_path);
+            write_server_log(server_log_level_info, listen_msg);
+        }
+
+        if (local_transport_accept(&runtime->transport) != 0) {
+            write_server_log_errno(
+                server_log_level_error,
+                "failed to accept client connection",
+                errno
+            );
+            local_transport_close(&runtime->transport);
+            unload_server_plugins(&runtime->plugin_loader, &runtime->plugin_registry);
+            close_server_log();
+            return 1;
+        }
+
+        write_server_log(server_log_level_info, "client connected");
+
+        local_transport_activate(&runtime->transport);
+        snet_init(&runtime->transport.base.platform, &squid_timing);
     }
-
-    {
-        char listen_msg[128];
-        snprintf(listen_msg, sizeof(listen_msg),
-            "waiting for client on %s", local_transport_default_socket_path);
-        write_server_log(server_log_level_info, listen_msg);
-    }
-
-    if (local_transport_accept(&runtime->transport) != 0) {
-        write_server_log_errno(
-            server_log_level_error,
-            "failed to accept client connection",
-            errno
-        );
-        local_transport_close(&runtime->transport);
-        unload_server_plugins(&runtime->plugin_loader, &runtime->plugin_registry);
-        close_server_log();
-        return 1;
-    }
-
-    write_server_log(server_log_level_info, "client connected");
-
-    /* Activate the transport fd and initialise the squid protocol engine. */
-    local_transport_activate(&runtime->transport);
-    snet_init(&runtime->transport.base.platform, &squid_timing);
 
     /* Open a squid socket for each plugin registered on ports 1-15. */
     open_plugin_sockets(runtime);
@@ -477,7 +516,11 @@ int run_server_runtime(struct server_runtime *runtime)
 
     /* Tear down. */
     close_plugin_sockets(runtime);
-    local_transport_close(&runtime->transport);
+    if (runtime->plugin_config.serial_device[0] != '\0') {
+        serial_transport_close(&runtime->serial_transport);
+    } else {
+        local_transport_close(&runtime->transport);
+    }
 
     write_server_log(server_log_level_info, "squid-server shutting down");
     unload_server_plugins(&runtime->plugin_loader, &runtime->plugin_registry);

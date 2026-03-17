@@ -10,15 +10,16 @@ This document is intended for contributors and maintainers. It covers architectu
 2. [Module breakdown](#module-breakdown)
 3. [Plugin API](#plugin-api)
 4. [Configuration parser](#configuration-parser)
-5. [Logging system](#logging-system)
-6. [Daemonization](#daemonization)
-7. [Signal handling](#signal-handling)
-8. [Plugin loader](#plugin-loader)
-9. [Plugin registry](#plugin-registry)
-10. [Build system](#build-system)
-11. [Test suite](#test-suite)
-12. [Code quality notes](#code-quality-notes)
-13. [Known limitations and future work](#known-limitations-and-future-work)
+5. [Transport layer](#transport-layer)
+6. [Logging system](#logging-system)
+7. [Daemonization](#daemonization)
+8. [Signal handling](#signal-handling)
+9. [Plugin loader](#plugin-loader)
+10. [Plugin registry](#plugin-registry)
+11. [Build system](#build-system)
+12. [Test suite](#test-suite)
+13. [Code quality notes](#code-quality-notes)
+14. [Known limitations and future work](#known-limitations-and-future-work)
 
 ---
 
@@ -28,24 +29,33 @@ squid-server is a C11 single-process server with a fixed-size plugin registry. T
 
 ```
 main()
-  └── run_server_app()                    src/app/
-        ├── parse_server_config()         src/config/
+  └── run_server_app()                       src/app/
+        ├── parse_server_config()            src/config/
         ├── print_server_usage() [opt]
-        └── run_server_runtime()          src/runtime/
-              ├── daemonize_process()     [daemon mode only]
+        └── run_server_runtime()             src/runtime/
+              ├── daemonize_process()        [daemon mode only]
               ├── init_server_log()
               ├── install_signal_handlers()
               ├── load_configured_plugins()
               │     ├── parse_server_plugin_config_file()
               │     └── load_server_plugin() × N
-              ├── sleep_until_stopped()   [signal loop]
+              ├── [transport setup]
+              │     ├── serial: serial_transport_open/activate
+              │     └── local:  local_transport_listen/accept/activate
+              ├── snet_init()                libsquid protocol engine
+              ├── open_plugin_sockets()      squid_open/squid_bind × N
+              ├── run_dispatch_loop()
+              │     ├── [wait for squid link handshake]
+              │     └── snet_burst() + dispatch_received_packets() × N
+              ├── close_plugin_sockets()
+              ├── [transport]_transport_close()
               ├── unload_server_plugins()
               └── close_server_log()
 ```
 
 All modules are compiled into a single static library `squid_server_core` and linked into the `squid-server` executable. Plugins live in separate shared libraries loaded at runtime via `dlopen`.
 
-There is intentionally no threading. The runtime loop calls `sleep(1)` and wakes on signal delivery. Packet dispatch is not yet wired to a real network layer; the plugin lifecycle (load → start → [handle_packet] → stop → unload) is fully implemented, awaiting connection to the libsquid platform.
+There is intentionally no threading. The dispatch loop calls `snet_burst()` and `usleep(5000)` (5 ms) per iteration, well within one 20 ms libsquid tick period. The loop exits when `snet_link_is_up()` returns false (peer restart or max retransmit exceeded) or a termination signal arrives.
 
 ---
 
@@ -78,13 +88,20 @@ Two distinct responsibilities kept in separate files:
 
 **`server_plugin_config.c`** — configuration file
 
+Parsed result is stored in `server_plugin_config_file`, which carries plugin mappings and the full set of serial line parameters (`serial_device`, `serial_baud`, `serial_databits`, `serial_parity`, `serial_stopbits`, `serial_flow`).
+
 - Line-oriented parser using `fgets` into a 1024-byte buffer
 - Trims leading and trailing whitespace before tokenising
 - Tokenises with `strtok` (acceptable: single-threaded, startup only)
-- Recognises two directives: `system_plugin <path>` and `plugin <port> <path>`
-- Rejects unknown directives, duplicate ports, out-of-range ports, and paths exceeding 512 bytes
+- Recognises eight directives: `system_plugin`, `plugin`, `serial_device`, `serial_baud`, `serial_databits`, `serial_parity`, `serial_stopbits`, `serial_flow`
+- Rejects unknown directives, duplicate ports, out-of-range ports, paths exceeding 512 bytes, device paths exceeding 64 bytes, and invalid serial parameter values
 - Returns a descriptive `const char *` error message on the first parse failure
 - Lines beginning with `#` (after trimming) are skipped as comments
+- Serial defaults: `serial_device` empty (local transport), `serial_baud` 9600, `serial_databits` 8, `serial_parity` none, `serial_stopbits` 1, `serial_flow` none
+
+### `src/transport/` — transport back-ends
+
+See [Transport layer](#transport-layer).
 
 ### `src/log/` — logging
 
@@ -175,12 +192,88 @@ The configuration parser (`src/config/server_plugin_config.c`) is intentionally 
 
 - Opens the file with `fopen`, reads line by line with `fgets`
 - Tokenises each non-comment, non-empty line with `strtok`
-- Passes token pointers directly to `parse_system_plugin_line()` or `parse_plugin_line()`
+- Dispatches on the keyword token to one of: `parse_system_plugin_line()`, `parse_plugin_line()`, or inline handlers for `serial_device` and `serial_baud`
 - On any error, closes the file and returns -1 with an error string
 
-**Line length limit:** `fgets` uses a 1024-byte buffer. Lines longer than 1023 characters (excluding the newline) will be split across multiple `fgets` calls. The parser will see the continuation as a new malformed line and reject it. Config lines are expected to be well under this limit in practice.
+**Line length limit:** `fgets` uses a 1024-byte buffer. Lines longer than 1023 characters will be split; the parser will see the continuation as a malformed line and reject it. Config lines are expected to be well under this limit.
 
-**Port validation:** Port numbers are parsed with `strtol` and validated in the range 1–15 for user plugins. Port 0 is handled exclusively through the `system_plugin` directive. The check for `is_valid_assignable_server_port()` is the authoritative guard.
+**Port validation:** Port numbers are parsed with `strtol` and validated in the range 1–15 for user plugins. Port 0 is handled exclusively through the `system_plugin` directive.
+
+**Serial device default:** When neither `serial_device` nor `serial_baud` appears in the file, the struct is zero-initialised for `serial_device` (empty string → local transport used) and `serial_baud` defaults to 9600.
+
+---
+
+## Transport layer
+
+The transport layer lives in `src/transport/` and is structured around a common base type:
+
+```c
+/* src/transport/server_transport.h */
+struct server_transport {
+    squid_platform_t platform;   /* libsquid I/O hooks — must be first */
+};
+```
+
+Every concrete transport struct embeds `struct server_transport` as its first member, allowing safe pointer casts (C99 §6.7.2.1). The embedded `squid_platform_t` is passed directly to `snet_init()` once the connection is established.
+
+Both transports are compiled into separate static libraries (`squid_transport_local` and `squid_transport_serial`) and linked into `squid_server_core`.
+
+### Local transport (`src/transport/local/`)
+
+Unix domain socket (SOCK_STREAM) transport for same-machine testing.
+
+**API:**
+
+| Function | Role |
+|----------|------|
+| `local_transport_listen(transport, path)` | Create, bind, and listen on a Unix socket. Removes any stale socket file first. |
+| `local_transport_accept(transport)` | Block until a client connects; fills `client_fd`. |
+| `local_transport_connect(transport, path)` | Client-side connect (used by sample programs). |
+| `local_transport_activate(transport)` | Set the module-level `transport_fd` to `client_fd`. Call before `snet_init()`. |
+| `local_transport_close(transport)` | Close all fds; unlink the socket file on the server side. |
+
+`recv_char` uses `MSG_DONTWAIT` so `snet_burst()` never blocks.
+
+### Serial transport (`src/transport/serial/`)
+
+POSIX TTY transport for hardware deployment over RS-232, USB-serial adapters, or any character device.
+
+**API:**
+
+| Function | Role |
+|----------|------|
+| `serial_transport_open(transport, device, baud)` | Open the device with `O_RDWR | O_NOCTTY | O_NONBLOCK`, save original `termios`, configure raw 8N1. |
+| `serial_transport_activate(transport)` | Set the module-level `transport_fd` to `fd`. Call before `snet_init()`. |
+| `serial_transport_close(transport)` | Restore original `termios` settings and close the fd. |
+
+All line parameters are passed via `serial_transport_config`. Terminal configuration applied by `configure_port()`:
+
+- Baud rate: mapped from integer to `speed_t` constant via `cfsetispeed`/`cfsetospeed`
+- Data bits: `CS7` or `CS8`; `CREAD | CLOCAL` always set (receiver enabled, ignore modem lines)
+- Parity: `PARENB` set for even/odd; `PARODD` additionally set for odd; both cleared for none
+- Stop bits: `CSTOPB` set for 2 stop bits; cleared for 1
+- Flow control: `CRTSCTS` set for RTS/CTS; `IXON | IXOFF` set for XON/XOFF; all cleared for none
+- `ICANON`, `ECHO`, `ISIG` cleared — raw input
+- `OPOST`, `ONLCR` cleared — raw output
+- `VMIN=0`, `VTIME=0` — non-blocking: return immediately with whatever is in the buffer
+
+The original `termios` state is stored in `transport->saved_tty` and restored on `serial_transport_close()`.
+
+### Transport selection in the runtime
+
+After `load_configured_plugins()`, `run_server_runtime()` inspects `plugin_config.serial_device`:
+
+```
+serial_device is non-empty  →  build serial_transport_config from all serial_* fields
+                               serial_transport_open / activate
+serial_device is empty      →  local_transport_listen / accept / activate
+```
+
+Both paths call `snet_init(&transport->base.platform, &squid_timing)` with the same timing constants, so the libsquid engine behaves identically regardless of the underlying physical link.
+
+### Module-level fd
+
+Both transports use a file-scope `static int transport_fd` to pass the active fd to the platform hook callbacks. This restricts the process to one active transport at a time — sufficient for the current single-connection server model. The libsquid `squid_platform_t` struct carries no user-data pointer, so this is the only viable approach without changing the platform API.
 
 ---
 
@@ -274,15 +367,19 @@ static void handle_termination_signal(int signal_number)
 
 `signal()` is used rather than `sigaction()`. On Linux with glibc, `signal()` uses BSD semantics (signal is not reset to `SIG_DFL` after delivery, and slow syscalls are restarted). This is correct behaviour for this use case. A future improvement would be `sigaction()` with `SA_RESTART` for strict POSIX portability.
 
-The runtime loop polls `keep_running` with `sleep(1)`:
+The dispatch loop checks `keep_running` at the top of each iteration alongside `snet_link_is_up()`:
 
 ```c
-while (keep_running != 0) {
-    sleep(1);
+while (keep_running && snet_link_is_up()) {
+    snet_burst();
+    dispatch_received_packets(runtime);
+    usleep(5000);
 }
 ```
 
-The `volatile sig_atomic_t` type guarantees that the flag is read atomically and that the compiler does not hoist the load out of the loop. An alternative would be `sigsuspend()` with an appropriate signal mask, which would wake immediately on signal delivery rather than waiting up to 1 second.
+`usleep(5000)` (5 ms) keeps the loop well within one 20 ms libsquid tick period while avoiding busy-spin. An alternative would be `sigsuspend()`, but that does not suit a polling protocol engine.
+
+The `volatile sig_atomic_t` type guarantees the flag is read atomically and that the compiler does not hoist the load out of the loop.
 
 ---
 
@@ -362,9 +459,9 @@ The registry holds `const struct server_plugin *` pointers. The plugin structs a
 - Minimum CMake 3.16, C11 with `CMAKE_C_EXTENSIONS OFF` (no GNU extensions)
 - Staging root: `${CMAKE_SOURCE_DIR}/bin/opt/squid/`
 - Creates the staging directory tree with `file(MAKE_DIRECTORY ...)`
-- Copies `opt/squid/etc/squid_server.conf` into the staging `etc/` directory
+- Copies `opt/squid/etc/squid_server.conf`, `squid_server_local.conf`, and `squid_server_serial.conf` into the staging `etc/` directory — `opt/squid/etc/` is the canonical source for all configuration templates
 - Copies all public headers from `include/squid_server/` into the staging `include/squid_server/` directory
-- Adds subdirectories: `lib`, `src`, `tests`
+- Adds subdirectories: `lib`, `src`, `tests`, `samples`
 
 ### `lib/CMakeLists.txt`
 
@@ -372,13 +469,17 @@ Fetches `libsquid` from GitHub via `FetchContent` at configure time using a pinn
 
 ### `src/CMakeLists.txt`
 
-Defines `squid_server_core` as an object/interface library target. Each subdirectory (`app`, `config`, `log`, `runtime`, `plugin`) appends its sources with `target_sources(squid_server_core ...)`. The final executable `squid-server` links `squid_server_core`, `squid` (public), and `dl` (private, for `dlopen`).
+Defines `squid_server_core` as a static library target. Each subdirectory appends sources with `target_sources`. The final executable `squid-server` links `squid_server_core`, `squid` (public), and `dl` (private, for `dlopen`).
+
+### `src/transport/CMakeLists.txt`
+
+Adds `local` and `serial` subdirectories. Each builds a static library (`squid_transport_local`, `squid_transport_serial`) and links it into `squid_server_core` with `target_link_libraries(squid_server_core PUBLIC ...)`.
 
 All compilation targets use `-Wall -Wextra -Wpedantic`.
 
 ### Plugin targets
 
-Each plugin (`lib/echo/`, `lib/squidsys/`) is a `MODULE` or `SHARED` library with its `LIBRARY_OUTPUT_DIRECTORY` pointed at the staging plugin directory. This means CMake places the built `.so` files directly into `bin/opt/squid/lib/plugins/` without a manual copy step.
+Each plugin (`lib/echo/`, `lib/squidsys/`) is a `SHARED` library with its `LIBRARY_OUTPUT_DIRECTORY` pointed at the staging plugin directory. CMake places the built `.so` files directly into `bin/opt/squid/lib/plugins/` without a manual copy step.
 
 ### Useful CMake variables
 
@@ -419,8 +520,8 @@ The following observations are informational — not bugs, but worth noting for 
 **`signal()` vs `sigaction()`**
 `install_signal_handlers()` uses `signal()`. On Linux with glibc, `signal()` uses BSD semantics, which is correct here. For strict POSIX portability and explicit control over `SA_RESTART`, `sigaction()` with `sa_flags = SA_RESTART` is preferred.
 
-**`sleep(1)` polling**
-The main loop polls `keep_running` every second. `sigsuspend()` with a blocked signal set would react instantly to a termination signal rather than waiting up to one second. The difference is negligible for a server that is stopped infrequently.
+**`usleep(5000)` polling**
+The dispatch loop polls with a fixed 5 ms sleep between iterations. This is adequate for the libsquid 20 ms tick period and avoids busy-spin, but does not react to link loss or signal delivery faster than 5 ms. An event-driven approach (e.g. `select()` or `poll()` on the transport fd) would reduce latency.
 
 **`strtok` in config parser**
 `strtok` modifies the buffer in place and is not reentrant. This is acceptable because config parsing is single-threaded and the buffer is local. If config parsing is ever moved to a thread, replace with `strtok_r`.
@@ -431,6 +532,9 @@ The main loop polls `keep_running` every second. `sigsuspend()` with a blocked s
 **`umask(0)` in daemon**
 Setting `umask(0)` means the daemon creates files with permissions determined solely by the `open()` or `creat()` call, without a mask applied. This is the traditional recommendation but means files are created world-readable/writable unless the mode argument is explicit. A stricter alternative is `umask(027)`.
 
+**Module-level fd in transports**
+Both transports use a `static int transport_fd` because the libsquid `squid_platform_t` hook callbacks carry no user-data pointer. This limits the process to one active transport, which is acceptable for the current single-connection model. If multi-connection support is ever needed, the platform API would need a user-data extension.
+
 ---
 
 ## Known limitations and future work
@@ -439,8 +543,8 @@ Setting `umask(0)` means the daemon creates files with permissions determined so
 |------|-------|
 | No PID file | Classic daemons write `/var/run/squid-server.pid`; needed for `kill $(cat ...)` patterns and some init systems |
 | No `SIGHUP` reload | Sending SIGHUP to reload config without restart is a conventional daemon feature |
-| No `sd_notify` | `systemd` `Type=notify` requires calling `sd_notify(0, "READY=1")` after plugin load; currently `Type=simple` is required |
-| No packet dispatch | The runtime loop does not yet connect to libsquid platform hooks; `handle_packet` is never called |
+| No `sd_notify` | systemd `Type=notify` requires calling `sd_notify(0, "READY=1")` after plugin load; currently `Type=simple` is required |
+| One client at a time | Both transports support a single connection; the local transport backlog is 1 |
 | No per-plugin error recovery | A plugin that crashes takes down the whole process; no sandboxing or isolation |
 | `signal()` portability | Replace with `sigaction()` for strict POSIX compliance |
-| `sleep(1)` latency | Replace with `sigsuspend()` for instant signal response |
+| Fixed poll interval | Replace `usleep(5000)` with `poll()`/`select()` on the transport fd for event-driven dispatch |

@@ -21,6 +21,7 @@
 #include "plugin/server_plugin_loader.h"
 #include "plugin/server_plugin_registry.h"
 #include "transport/local/local_transport.h"
+#include "transport/serial/serial_transport.h"
 
 #include "squid_server/plugin_api.h"
 
@@ -35,6 +36,7 @@ struct server_runtime {
     struct server_plugin_registry    plugin_registry;
     struct server_plugin_loader      plugin_loader;
     struct server_local_transport    transport;
+    struct server_serial_transport   serial_transport;
     /*
      * One libsquid socket fd per port slot (0-15).
      * Slots for unregistered ports hold -1.
