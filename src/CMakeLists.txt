@@ -18,6 +18,7 @@ add_subdirectory(config)
 add_subdirectory(log)
 add_subdirectory(plugin)
 add_subdirectory(runtime)
+add_subdirectory(transport)
 
 file(GLOB src_root_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.c")
 

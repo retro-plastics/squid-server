@@ -1,3 +1,21 @@
+/*
+ * echo_plugin.c
+ *
+ * Minimal echo plugin for squid-server.  Every packet received
+ * on the plugin's wire channel is returned verbatim to the
+ * sender.  Useful for verifying end-to-end transport and
+ * protocol correctness during development.
+ *
+ * NOTES:
+ *  Packets larger than the response buffer capacity are rejected
+ *  with -1 (the server discards the response silently).
+ *
+ * GPL2 License (see: LICENSE)
+ * copyright (c) 2026 tomaz stih
+ *
+ * tstih
+ */
+
 #include "squid_server/plugin_api.h"
 
 #include <string.h>

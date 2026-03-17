@@ -1,3 +1,24 @@
+/*
+ * server_plugin_loader.c
+ *
+ * Opens plugin shared libraries with dlopen(RTLD_NOW|RTLD_LOCAL),
+ * resolves the get_server_plugin() factory symbol, calls the
+ * plugin's start() callback, and registers the result in the
+ * plugin registry.  Unloading is done in reverse load order via
+ * unload_server_plugins().
+ *
+ * NOTES:
+ *  Absolute plugin paths from the config file are prefixed with
+ *  the SQUID_SERVER_STAGE_ROOT environment variable when it is
+ *  set, allowing local test builds to redirect the default
+ *  /opt/squid/... tree to a staging directory.
+ *
+ * GPL2 License (see: LICENSE)
+ * copyright (c) 2026 tomaz stih
+ *
+ * tstih
+ */
+
 #include "plugin/server_plugin_loader.h"
 
 #include <dlfcn.h>

@@ -28,6 +28,12 @@ configure_file(
     COPYONLY
 )
 
+configure_file(
+    ${CMAKE_SOURCE_DIR}/opt/squid/etc/squid_server_local.conf
+    ${server_stage_etc_root}/squid_server_local.conf
+    COPYONLY
+)
+
 file(GLOB server_public_headers CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/include/squid_server/*.h")
 
 foreach(server_public_header IN LISTS server_public_headers)
@@ -44,3 +50,4 @@ enable_testing()
 add_subdirectory(lib)
 add_subdirectory(src)
 add_subdirectory(tests)
+add_subdirectory(samples)

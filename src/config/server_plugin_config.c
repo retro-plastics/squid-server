@@ -1,3 +1,26 @@
+/*
+ * server_plugin_config.c
+ *
+ * Parser for the plugin configuration file.  The file format
+ * is line-oriented plain text with two directives:
+ *
+ *   system_plugin <path>
+ *   plugin <port> <path>
+ *
+ * Lines beginning with '#' and blank lines are ignored.  Each
+ * parsed entry populates a server_plugin_config_file struct that
+ * the runtime uses to dlopen the listed shared libraries.
+ *
+ * NOTES:
+ *  Paths are limited to server_plugin_path_max bytes.  Port
+ *  numbers must be in the range 1-15 (assignable wire channels).
+ *
+ * GPL2 License (see: LICENSE)
+ * copyright (c) 2026 tomaz stih
+ *
+ * tstih
+ */
+
 #include "config/server_plugin_config.h"
 
 #include <ctype.h>

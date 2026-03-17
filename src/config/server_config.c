@@ -1,3 +1,18 @@
+/*
+ * server_config.c
+ *
+ * Command-line argument parser for squid-server.  Recognises
+ * --console, --daemon, --config <path>, and --help.  Produces a
+ * populated server_config struct; errors are returned as a
+ * caller-owned string pointer so the caller can format the
+ * usage message.
+ *
+ * GPL2 License (see: LICENSE)
+ * copyright (c) 2026 tomaz stih
+ *
+ * tstih
+ */
+
 #include "config/server_config.h"
 
 #include <stdio.h>

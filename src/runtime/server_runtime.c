@@ -1,6 +1,34 @@
+/*
+ * server_runtime.c
+ *
+ * Core server loop.  Handles daemonisation, signal setup, plugin
+ * loading, Unix-socket transport initialisation, and the squid
+ * protocol dispatch loop.  Each call to snet_burst() drives the
+ * libsquid engine; received packets are dispatched to the plugin
+ * registered on the matching wire channel and responses are
+ * queued for the next TX burst.
+ *
+ * NOTES:
+ *  _XOPEN_SOURCE 600 is required for usleep().
+ *  The dispatch loop exits when snet_link_is_up() returns false,
+ *  which happens on peer-restart or after max retransmit
+ *  attempts.  WAITING state (data in-flight) keeps link_up set,
+ *  so the loop continues through normal data transfer.
+ *
+ * GPL2 License (see: LICENSE)
+ * copyright (c) 2026 tomaz stih
+ *
+ * tstih
+ */
+
+#define _XOPEN_SOURCE 600
+
 #include "runtime/server_runtime.h"
 
 #include "log/server_log.h"
+
+#include <squid/snet.h>
+#include <squid/socket.h>
 
 #include <errno.h>
 #include <signal.h>
@@ -12,7 +40,21 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+/* Maximum bytes in a single application-level squid packet. */
+#define server_packet_max 256U
+
+/*
+ * libsquid timing parameters (values in ticks; one tick = 20 ms).
+ *   timeout_ticks   6  →  120 ms resend timeout
+ *   ack_delay_ticks 2  →   40 ms ACK-piggybacking window
+ *   ping_ticks     10  →  200 ms keepalive heartbeat
+ *   max_retries     3
+ */
+static const squid_timing_t squid_timing = { 6U, 0U, 0U, 3U };
+
 static volatile sig_atomic_t keep_running = 1;
+
+/* ---- helpers ---- */
 
 static void write_plugin_load_log(
     enum server_log_level level,
@@ -34,6 +76,8 @@ static void write_plugin_load_log(
     write_server_log(level, text);
 }
 
+/* ---- signal handling ---- */
+
 static void handle_termination_signal(int signal_number)
 {
     (void)signal_number;
@@ -52,6 +96,8 @@ static int install_signal_handlers(void)
 
     return 0;
 }
+
+/* ---- daemonization ---- */
 
 static int daemonize_process(void)
 {
@@ -100,28 +146,7 @@ static int daemonize_process(void)
     return 1;
 }
 
-static void sleep_until_stopped(void)
-{
-    while (keep_running != 0) {
-        sleep(1);
-    }
-}
-
-void init_server_runtime(
-    struct server_runtime *runtime,
-    const struct server_config *config
-)
-{
-    if ((runtime == NULL) || (config == NULL)) {
-        return;
-    }
-
-    memset(runtime, 0, sizeof(*runtime));
-    runtime->config = *config;
-    init_server_plugin_config_file(&runtime->plugin_config);
-    init_server_plugin_registry(&runtime->plugin_registry);
-    init_server_plugin_loader(&runtime->plugin_loader);
-}
+/* ---- plugin loading ---- */
 
 static int load_configured_plugins(struct server_runtime *runtime)
 {
@@ -201,6 +226,156 @@ static int load_configured_plugins(struct server_runtime *runtime)
     return 0;
 }
 
+/* ---- libsquid socket management ---- */
+
+static void open_plugin_sockets(struct server_runtime *runtime)
+{
+    uint8_t port = 0;
+
+    for (port = server_plugin_port_min; port <= server_plugin_port_max; ++port) {
+        if (find_server_plugin(&runtime->plugin_registry, port) == NULL) {
+            continue;
+        }
+
+        runtime->squid_fds[port] = squid_open();
+        if (runtime->squid_fds[port] < 0) {
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                "squid_open failed for port %u — plugin will not receive packets",
+                (unsigned int)port);
+            write_server_log(server_log_level_warning, msg);
+            continue;
+        }
+
+        /* Wire channel N is bound directly to server port N. */
+        squid_bind(runtime->squid_fds[port], port);
+    }
+}
+
+static void close_plugin_sockets(struct server_runtime *runtime)
+{
+    uint8_t port = 0;
+
+    for (port = server_plugin_port_min; port <= server_plugin_port_max; ++port) {
+        if (runtime->squid_fds[port] >= 0) {
+            squid_close(runtime->squid_fds[port]);
+            runtime->squid_fds[port] = -1;
+        }
+    }
+}
+
+/* ---- packet dispatch ---- */
+
+static void dispatch_received_packets(struct server_runtime *runtime)
+{
+    uint8_t port = 0;
+    uint8_t rx_buf[server_packet_max];
+    uint8_t tx_buf[server_packet_max];
+
+    for (port = server_plugin_port_min; port <= server_plugin_port_max; ++port) {
+        const struct server_plugin *plugin = NULL;
+        int received = 0;
+
+        if (runtime->squid_fds[port] < 0) {
+            continue;
+        }
+
+        received = squid_recv(
+            runtime->squid_fds[port],
+            rx_buf,
+            (uint16_t)sizeof(rx_buf)
+        );
+
+        if (received <= 0) {
+            continue;
+        }
+
+        plugin = find_server_plugin(&runtime->plugin_registry, port);
+        if ((plugin == NULL) || (plugin->handle_packet == NULL)) {
+            continue;
+        }
+
+        {
+            struct server_packet_view request;
+            struct server_packet_buffer response;
+
+            request.packet_data = rx_buf;
+            request.packet_size = (size_t)received;
+
+            response.packet_data     = tx_buf;
+            response.packet_capacity = sizeof(tx_buf);
+            response.packet_size     = 0U;
+
+            if (plugin->handle_packet(
+                (struct server_plugin *)plugin,
+                port,
+                &request,
+                &response
+            ) == 0) {
+                if (response.packet_size > 0U) {
+                    squid_send(
+                        runtime->squid_fds[port],
+                        (const uint8_t *)response.packet_data,
+                        (uint16_t)response.packet_size
+                    );
+                }
+            }
+        }
+    }
+}
+
+/* ---- main dispatch loop ---- */
+
+static void run_dispatch_loop(struct server_runtime *runtime)
+{
+    /* Wait for the squid link handshake to complete. */
+    while (keep_running && !snet_link_is_up()) {
+        snet_burst();
+        usleep(5000);
+    }
+
+    if (!keep_running) {
+        return;
+    }
+
+    write_server_log(server_log_level_info, "squid link established");
+
+    /* Run until a signal arrives or the link drops. */
+    while (keep_running && snet_link_is_up()) {
+        snet_burst();
+        dispatch_received_packets(runtime);
+        usleep(5000);   /* 5 ms — well within one 20 ms tick period */
+    }
+
+    if (!snet_link_is_up()) {
+        write_server_log(server_log_level_info, "squid link lost");
+    }
+}
+
+/* ---- public API ---- */
+
+void init_server_runtime(
+    struct server_runtime *runtime,
+    const struct server_config *config
+)
+{
+    int i = 0;
+
+    if ((runtime == NULL) || (config == NULL)) {
+        return;
+    }
+
+    memset(runtime, 0, sizeof(*runtime));
+    runtime->config = *config;
+    init_server_plugin_config_file(&runtime->plugin_config);
+    init_server_plugin_registry(&runtime->plugin_registry);
+    init_server_plugin_loader(&runtime->plugin_loader);
+
+    for (i = 0; i < server_port_count; ++i) {
+        runtime->squid_fds[i] = -1;
+    }
+}
+
 int run_server_runtime(struct server_runtime *runtime)
 {
     int daemon_result = 0;
@@ -222,7 +397,7 @@ int run_server_runtime(struct server_runtime *runtime)
         }
 
         if (daemon_result == 0) {
-            return 0;
+            return 0;   /* original parent exits cleanly */
         }
     }
 
@@ -254,7 +429,55 @@ int run_server_runtime(struct server_runtime *runtime)
     );
     write_server_log(server_log_level_info, startup_message);
 
-    sleep_until_stopped();
+    /* Set up the local Unix-socket transport and wait for a client. */
+    if (local_transport_listen(
+        &runtime->transport,
+        local_transport_default_socket_path
+    ) != 0) {
+        write_server_log_errno(
+            server_log_level_error,
+            "failed to create local transport socket",
+            errno
+        );
+        unload_server_plugins(&runtime->plugin_loader, &runtime->plugin_registry);
+        close_server_log();
+        return 1;
+    }
+
+    {
+        char listen_msg[128];
+        snprintf(listen_msg, sizeof(listen_msg),
+            "waiting for client on %s", local_transport_default_socket_path);
+        write_server_log(server_log_level_info, listen_msg);
+    }
+
+    if (local_transport_accept(&runtime->transport) != 0) {
+        write_server_log_errno(
+            server_log_level_error,
+            "failed to accept client connection",
+            errno
+        );
+        local_transport_close(&runtime->transport);
+        unload_server_plugins(&runtime->plugin_loader, &runtime->plugin_registry);
+        close_server_log();
+        return 1;
+    }
+
+    write_server_log(server_log_level_info, "client connected");
+
+    /* Activate the transport fd and initialise the squid protocol engine. */
+    local_transport_activate(&runtime->transport);
+    snet_init(&runtime->transport.base.platform, &squid_timing);
+
+    /* Open a squid socket for each plugin registered on ports 1-15. */
+    open_plugin_sockets(runtime);
+
+    /* Run the packet dispatch loop. */
+    run_dispatch_loop(runtime);
+
+    /* Tear down. */
+    close_plugin_sockets(runtime);
+    local_transport_close(&runtime->transport);
 
     write_server_log(server_log_level_info, "squid-server shutting down");
     unload_server_plugins(&runtime->plugin_loader, &runtime->plugin_registry);

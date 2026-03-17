@@ -1,3 +1,17 @@
+/*
+ * server_plugin_registry.c
+ *
+ * Fixed-size registry that maps each server port number (0-15)
+ * to a loaded plugin pointer.  Port 0 is reserved for the
+ * mandatory squidsys system plugin; ports 1-15 are assignable
+ * user plugins.  Lookup is O(1) via direct slot indexing.
+ *
+ * GPL2 License (see: LICENSE)
+ * copyright (c) 2026 tomaz stih
+ *
+ * tstih
+ */
+
 #include "plugin/server_plugin_registry.h"
 
 void init_server_plugin_registry(struct server_plugin_registry *registry)

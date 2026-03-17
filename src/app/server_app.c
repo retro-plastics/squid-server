@@ -1,3 +1,16 @@
+/*
+ * server_app.c
+ *
+ * Top-level application glue.  Parses command-line arguments into
+ * a server_config, then hands off to the runtime to do the real
+ * work.  Keeps main() trivial and testable.
+ *
+ * GPL2 License (see: LICENSE)
+ * copyright (c) 2026 tomaz stih
+ *
+ * tstih
+ */
+
 #include "app/server_app.h"
 
 #include "config/server_config.h"

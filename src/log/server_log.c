@@ -1,3 +1,23 @@
+/*
+ * server_log.c
+ *
+ * Logging back-end that writes to stdout (console mode) or to
+ * the system logger via syslog(3) (daemon mode).  The active
+ * back-end is chosen once by init_server_log() and is never
+ * changed while the process is running.
+ *
+ * NOTES:
+ *  In daemon mode the facility is LOG_DAEMON and the ident is
+ *  "squid-server".  LOG_PID | LOG_NDELAY are used so that the
+ *  PID appears in every log line and the socket is opened
+ *  immediately (before the syslog daemon might restart).
+ *
+ * GPL2 License (see: LICENSE)
+ * copyright (c) 2026 tomaz stih
+ *
+ * tstih
+ */
+
 #include "log/server_log.h"
 
 #include <errno.h>
