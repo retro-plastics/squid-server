@@ -202,7 +202,6 @@ int parse_server_plugin_config_file(
 {
     FILE *input = NULL;
     char line_buffer[1024];
-    unsigned int line_number = 0;
 
     if (config_file == NULL) {
         if (error_message != NULL) {
@@ -239,8 +238,6 @@ int parse_server_plugin_config_file(
         char *second_value = NULL;
         char *extra_value = NULL;
         const char *line_error = NULL;
-
-        ++line_number;
 
         trim_right(line_buffer);
         line = trim_left(line_buffer);

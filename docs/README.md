@@ -490,7 +490,17 @@ All compilation targets use `-Wall -Wextra -Wpedantic`.
 
 ### Plugin targets
 
-Each plugin (`lib/echo/`, `lib/squidsys/`) is a `SHARED` library with its `LIBRARY_OUTPUT_DIRECTORY` pointed at the staging plugin directory. CMake places the built `.so` files directly into `bin/opt/squid/lib/plugins/` without a manual copy step.
+Each plugin (`lib/echo/`, `lib/filesystem/`, `lib/retrovault/`,
+`lib/squidsys/`, `lib/tcp_proxy/`, and `lib/time/`) is a `SHARED`
+library with its `LIBRARY_OUTPUT_DIRECTORY` pointed at the staging plugin
+directory. CMake places the built `.so` files directly into
+`bin/opt/squid/lib/plugins/` without a manual copy step. The Retro Vault
+target links libcurl and keeps its JSON parser private to the Linux side; its
+8-bit wire format is specified in [RETROVAULT_PROTOCOL.md](RETROVAULT_PROTOCOL.md).
+The other binary service contracts are specified in
+[FILESYSTEM_PROTOCOL.md](FILESYSTEM_PROTOCOL.md),
+[TIME_PROTOCOL.md](TIME_PROTOCOL.md), and
+[TCP_PROXY_PROTOCOL.md](TCP_PROXY_PROTOCOL.md).
 
 ### Useful CMake variables
 
@@ -514,7 +524,7 @@ Each plugin (`lib/echo/`, `lib/squidsys/`) is a `SHARED` library with its `LIBRA
 | `test_plugin_registry` | Register two plugins, reject duplicate, find by port, reject out-of-range port, count |
 | `test_plugin_config_file` | Write a temp config file, parse it, verify system plugin path and one port mapping |
 
-The test executable is self-contained: it writes to stderr on failure and returns 1; it prints `"all tests passed"` and returns 0 on success.
+The main test executable is self-contained: it writes to stderr on failure and returns 1; it prints `"all tests passed"` and returns 0 on success. Additional CTest entries cover Retro Vault framing and API translation, rooted filesystem operations and path safety, UTC/local time records, and a real loopback TCP connect/write/read/EOF exchange. Running `retrovault-tests --live` performs an opt-in live catalog smoke test and is deliberately not part of CTest.
 
 Run with:
 

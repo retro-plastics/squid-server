@@ -27,6 +27,10 @@ The server supports two startup modes:
 - **Clean shutdown** — `SIGTERM` and `SIGINT` trigger graceful plugin teardown
 - **Staged build tree** — the build produces a deployment-ready layout under `bin/opt/squid/` for local development
 - **Echo plugin** — a minimal reference plugin that reflects incoming packet payload back to the client
+- **Retro Vault plugin** — compact binary list, search, info, and chunked-download operations for 8-bit package managers
+- **Rooted filesystem plugin** — path-based stat, list, read, write, mkdir, delete, and rename operations
+- **Time plugin** — fixed-size UTC or local PC time-and-date records
+- **TCP proxy plugin** — one outbound raw TCP stream with binary connect, read, write, status, and close controls
 
 ---
 
@@ -36,6 +40,7 @@ The server supports two startup modes:
 - CMake 3.16 or later
 - GCC or Clang with C11 support
 - `libdl` (part of glibc, present on all standard Linux systems)
+- libcurl development headers and library
 - Internet access during configure (CMake resolves and fetches the latest
   published `libsquid` release)
 
@@ -65,10 +70,18 @@ bin/opt/squid/
 │   ├── squid_server_local.conf   # local Unix-socket transport (development)
 │   └── squid_server_serial.conf  # serial port transport template
 ├── include/squid_server/
-│   └── plugin_api.h              # public plugin API header
+│   ├── filesystem_protocol.h     # rooted filesystem wire constants
+│   ├── plugin_api.h              # public plugin API header
+│   ├── retrovault_protocol.h     # Retro Vault wire constants
+│   ├── tcp_proxy_protocol.h      # raw TCP proxy wire constants
+│   └── time_protocol.h           # PC time/date wire constants
 └── lib/plugins/
     ├── libecho.so                 # echo reference plugin
-    └── libsquidsys.so             # system plugin (port 0)
+    ├── libfilesystem.so           # rooted filesystem service
+    ├── libretrovault.so           # Retro Vault binary gateway
+    ├── libsquidsys.so             # system plugin (port 0)
+    ├── libtcp_proxy.so            # raw TCP proxy
+    └── libtime.so                 # PC time and date
 ```
 
 ---
@@ -87,7 +100,7 @@ SQUID_SERVER_STAGE_ROOT=./bin \
 Console mode writes log lines to standard output:
 
 ```
-[info] squid-server starting in console mode with 16 plugin slots and 2 loaded plugins
+[info] squid-server starting in console mode with 16 plugin slots and 6 loaded plugins
 [info] waiting for client on /tmp/squid_server.sock
 [info] client connected
 [info] squid link established
@@ -174,6 +187,10 @@ The transport is chosen automatically based on whether `serial_device` is presen
 
 system_plugin /opt/squid/lib/plugins/libsquidsys.so
 plugin 1 /opt/squid/lib/plugins/libecho.so
+plugin 3 /opt/squid/lib/plugins/libretrovault.so
+plugin 4 /opt/squid/lib/plugins/libfilesystem.so
+plugin 5 /opt/squid/lib/plugins/libtime.so
+plugin 6 /opt/squid/lib/plugins/libtcp_proxy.so
 ```
 
 ### Serial transport examples
@@ -257,6 +274,41 @@ journalctl -u squid-server -f
 ```
 
 > **Note:** `--daemon` mode is not required under systemd and is not recommended for it. Use `--daemon` only when running squid-server outside of a service manager.
+
+---
+
+## Retro Vault package protocol
+
+The supplied configurations mount `libretrovault.so` on squid channel 3. It
+provides list, search, package-info, and resumable chunk-download operations.
+The 8-bit side receives compact binary records only; the plugin performs all
+HTTP and JSON work against [Retro Vault](https://retro-vault.org/) on Linux.
+
+The complete byte-level contract, including cursor behavior, status codes,
+TLVs, and hexadecimal examples, is in
+[docs/RETROVAULT_PROTOCOL.md](docs/RETROVAULT_PROTOCOL.md). Its constants are
+mirrored by `include/squid_server/retrovault_protocol.h`.
+
+The API base defaults to `https://retro-vault.org`. Set
+`RETRO_VAULT_API_URL` in the server environment to use a development server.
+
+---
+
+## Filesystem, time, and TCP protocols
+
+Three additional compact binary services are enabled by the supplied
+configurations:
+
+| Channel | Plugin | Protocol reference |
+|---:|---|---|
+| 4 | Rooted POSIX-like filesystem | [FILESYSTEM_PROTOCOL.md](docs/FILESYSTEM_PROTOCOL.md) |
+| 5 | PC time and date | [TIME_PROTOCOL.md](docs/TIME_PROTOCOL.md) |
+| 6 | Raw outbound TCP proxy | [TCP_PROXY_PROTOCOL.md](docs/TCP_PROXY_PROTOCOL.md) |
+
+The filesystem defaults to `/opt/squid/share`; override it with
+`SQUID_FS_ROOT` or set `SQUID_FS_READ_ONLY=1`. The TCP proxy allows all hosts
+by default. Restrict it with an exact, comma-separated
+`SQUID_TCP_ALLOWED_HOSTS` list when the squid link is not fully trusted.
 
 ---
 
@@ -362,6 +414,15 @@ iterations.
 
 ```sh
 ctest --test-dir build --output-on-failure
+```
+
+The deterministic suite includes the Retro Vault mock catalog, rooted
+filesystem operations, PC time/date validation, and a loopback TCP exchange.
+An opt-in smoke test exercises the Retro Vault parser and HTTP adapter against
+the live API:
+
+```sh
+./bin/opt/squid/bin/retrovault-tests --live
 ```
 
 ---

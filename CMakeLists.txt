@@ -11,6 +11,7 @@ set(server_stage_bin_root ${server_stage_root}/bin)
 set(server_stage_etc_root ${server_stage_root}/etc)
 set(server_stage_include_root ${server_stage_root}/include/squid_server)
 set(server_stage_plugin_root ${server_stage_root}/lib/plugins)
+set(server_stage_share_root ${server_stage_root}/share)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${server_stage_bin_root})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -21,6 +22,7 @@ file(MAKE_DIRECTORY ${server_stage_bin_root})
 file(MAKE_DIRECTORY ${server_stage_etc_root})
 file(MAKE_DIRECTORY ${server_stage_include_root})
 file(MAKE_DIRECTORY ${server_stage_plugin_root})
+file(MAKE_DIRECTORY ${server_stage_share_root})
 
 configure_file(
     ${CMAKE_SOURCE_DIR}/opt/squid/etc/squid_server.conf

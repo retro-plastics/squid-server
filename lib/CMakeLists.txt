@@ -73,4 +73,8 @@ target_compile_options(squid PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(squid PRIVATE SQUID_MAX_SOCKETS=15)
 
 add_subdirectory(echo)
+add_subdirectory(filesystem)
+add_subdirectory(retrovault)
 add_subdirectory(squidsys)
+add_subdirectory(tcp_proxy)
+add_subdirectory(time)
