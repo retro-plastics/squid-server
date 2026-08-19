@@ -1,9 +1,53 @@
 include(FetchContent)
 
+set(libsquid_release_api_url
+    "https://api.github.com/repos/retro-plastics/libsquid/releases/latest"
+)
+set(libsquid_release_metadata
+    "${CMAKE_BINARY_DIR}/libsquid-latest-release.json"
+)
+
+file(
+    DOWNLOAD
+    "${libsquid_release_api_url}"
+    "${libsquid_release_metadata}"
+    HTTPHEADER "Accept: application/vnd.github+json"
+    HTTPHEADER "User-Agent: squid-server-cmake"
+    HTTPHEADER "X-GitHub-Api-Version: 2022-11-28"
+    STATUS libsquid_release_status
+    TLS_VERIFY ON
+)
+
+list(GET libsquid_release_status 0 libsquid_release_status_code)
+list(GET libsquid_release_status 1 libsquid_release_status_message)
+
+if(NOT libsquid_release_status_code EQUAL 0)
+    message(FATAL_ERROR
+        "Failed to resolve the latest libsquid release: "
+        "${libsquid_release_status_message}"
+    )
+endif()
+
+file(READ "${libsquid_release_metadata}" libsquid_release_json)
+string(REGEX MATCH
+    "\"tag_name\"[ \t\r\n]*:[ \t\r\n]*\"([^\"]+)\""
+    libsquid_release_tag_match
+    "${libsquid_release_json}"
+)
+set(libsquid_release_tag "${CMAKE_MATCH_1}")
+
+if(libsquid_release_tag STREQUAL "")
+    message(FATAL_ERROR
+        "The latest libsquid release metadata did not contain a tag_name"
+    )
+endif()
+
+message(STATUS "Using latest libsquid release: ${libsquid_release_tag}")
+
 FetchContent_Declare(
     libsquid
     GIT_REPOSITORY https://github.com/retro-plastics/libsquid.git
-    GIT_TAG 8ea50fedb782d90168fc7e801f4dac872dbf34ec
+    GIT_TAG "${libsquid_release_tag}"
     GIT_SHALLOW TRUE
 )
 
@@ -26,6 +70,7 @@ target_include_directories(squid
 
 target_compile_features(squid PUBLIC c_std_11)
 target_compile_options(squid PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(squid PRIVATE SQUID_MAX_SOCKETS=15)
 
 add_subdirectory(echo)
 add_subdirectory(squidsys)

@@ -2,9 +2,9 @@
  * serial_transport.c
  *
  * POSIX serial port (TTY) transport implementation.
- * Provides the five libsquid platform hooks — send_char,
- * recv_char, get_tick, malloc, and free — wired to an open
- * serial fd configured for raw non-blocking I/O.
+ * Provides the three libsquid platform hooks — send_char,
+ * recv_char, and get_tick — wired to an open serial fd configured
+ * for raw non-blocking I/O.
  *
  * Line parameters (baud, data bits, parity, stop bits, flow
  * control) are taken from a serial_transport_config struct so
@@ -36,7 +36,6 @@
 #include "transport/serial/serial_transport.h"
 
 #include <fcntl.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -89,22 +88,10 @@ static uint8_t serial_get_tick(void)
     return (uint8_t)((ts.tv_sec * 50UL + (unsigned long)ts.tv_nsec / 20000000UL) & 0xFFU);
 }
 
-static void *serial_malloc(uint16_t n)
-{
-    return malloc((size_t)n);
-}
-
-static void serial_free(void *p)
-{
-    free(p);
-}
-
 static const squid_platform_t serial_platform = {
     serial_send_char,
     serial_recv_char,
-    serial_get_tick,
-    serial_malloc,
-    serial_free
+    serial_get_tick
 };
 
 /* ---- Internal helpers ---- */

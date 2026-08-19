@@ -43,8 +43,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-/* Maximum bytes in a single application-level squid packet. */
-#define server_packet_max 256U
+/* Maximum payload that fits atomically in a libsquid socket ring. */
+#define server_packet_max (server_squid_ring_size - 1U)
 
 /*
  * libsquid timing parameters (values in ticks; one tick = 20 ms).
@@ -53,7 +53,12 @@
  *   ping_ticks     10  →  200 ms keepalive heartbeat
  *   max_retries     3
  */
-static const squid_timing_t squid_timing = { 6U, 0U, 0U, 3U };
+static const squid_timing_t squid_timing = {
+    .timeout_ticks = 6U,
+    .ack_delay_ticks = 2U,
+    .ping_ticks = 10U,
+    .max_retries = 3U
+};
 
 static volatile sig_atomic_t keep_running = 1;
 
@@ -240,7 +245,12 @@ static void open_plugin_sockets(struct server_runtime *runtime)
             continue;
         }
 
-        runtime->squid_fds[port] = squid_open();
+        runtime->squid_fds[port] = squid_open(
+            runtime->squid_tx_rings[port],
+            (uint8_t)server_squid_ring_size,
+            runtime->squid_rx_rings[port],
+            (uint8_t)server_squid_ring_size
+        );
         if (runtime->squid_fds[port] < 0) {
             char msg[128];
             snprintf(msg, sizeof(msg),
@@ -251,7 +261,15 @@ static void open_plugin_sockets(struct server_runtime *runtime)
         }
 
         /* Wire channel N is bound directly to server port N. */
-        squid_bind(runtime->squid_fds[port], port);
+        if (squid_bind(runtime->squid_fds[port], port) != 0) {
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                "squid_bind failed for port %u — plugin will not receive packets",
+                (unsigned int)port);
+            write_server_log(server_log_level_warning, msg);
+            squid_close(runtime->squid_fds[port]);
+            runtime->squid_fds[port] = -1;
+        }
     }
 }
 
@@ -273,7 +291,6 @@ static void dispatch_received_packets(struct server_runtime *runtime)
 {
     uint8_t port = 0;
     uint8_t rx_buf[server_packet_max];
-    uint8_t tx_buf[server_packet_max];
 
     for (port = server_plugin_port_min; port <= server_plugin_port_max; ++port) {
         const struct server_plugin *plugin = NULL;
@@ -281,6 +298,23 @@ static void dispatch_received_packets(struct server_runtime *runtime)
 
         if (runtime->squid_fds[port] < 0) {
             continue;
+        }
+
+        /*
+         * libsquid applies all-or-nothing TX backpressure.  Keep a
+         * plugin response until the socket ring has room rather than losing
+         * it, and stop draining this port's RX ring while a reply is pending.
+         */
+        if (runtime->pending_response_sizes[port] > 0U) {
+            if (squid_send(
+                runtime->squid_fds[port],
+                runtime->pending_responses[port],
+                (uint16_t)runtime->pending_response_sizes[port]
+            ) < 0) {
+                continue;
+            }
+
+            runtime->pending_response_sizes[port] = 0U;
         }
 
         received = squid_recv(
@@ -305,8 +339,8 @@ static void dispatch_received_packets(struct server_runtime *runtime)
             request.packet_data = rx_buf;
             request.packet_size = (size_t)received;
 
-            response.packet_data     = tx_buf;
-            response.packet_capacity = sizeof(tx_buf);
+            response.packet_data     = runtime->pending_responses[port];
+            response.packet_capacity = sizeof(runtime->pending_responses[port]);
             response.packet_size     = 0U;
 
             if (plugin->handle_packet(
@@ -315,12 +349,28 @@ static void dispatch_received_packets(struct server_runtime *runtime)
                 &request,
                 &response
             ) == 0) {
-                if (response.packet_size > 0U) {
-                    squid_send(
-                        runtime->squid_fds[port],
-                        (const uint8_t *)response.packet_data,
-                        (uint16_t)response.packet_size
+                if ((response.packet_size > 0U) &&
+                    ((response.packet_data != runtime->pending_responses[port]) ||
+                     (response.packet_size > sizeof(runtime->pending_responses[port])))) {
+                    char msg[192];
+                    snprintf(
+                        msg,
+                        sizeof(msg),
+                        "plugin %s on port %u returned an invalid response — discarded",
+                        plugin->plugin_name != NULL ? plugin->plugin_name : "(unnamed)",
+                        (unsigned int)port
                     );
+                    write_server_log(server_log_level_warning, msg);
+                } else if (response.packet_size > 0U) {
+                    if (squid_send(
+                        runtime->squid_fds[port],
+                        runtime->pending_responses[port],
+                        (uint16_t)response.packet_size
+                    ) >= 0) {
+                        response.packet_size = 0U;
+                    }
+
+                    runtime->pending_response_sizes[port] = response.packet_size;
                 }
             }
         }

@@ -39,7 +39,8 @@
  */
 #define ECHO_CHANNEL 2
 
-#define PACKET_MAX 256
+#define SQUID_RING_SIZE 255U
+#define PACKET_MAX (SQUID_RING_SIZE - 1U)
 
 static const squid_timing_t timing = { 6U, 0U, 0U, 3U };
 
@@ -47,8 +48,10 @@ int main(void)
 {
     struct server_local_transport transport;
     int squid_fd;
-    char line[PACKET_MAX];
+    char line[PACKET_MAX + 1U];
     uint8_t rx_buf[PACKET_MAX];
+    uint8_t tx_ring[SQUID_RING_SIZE];
+    uint8_t rx_ring[SQUID_RING_SIZE];
 
     if (local_transport_connect(
         &transport,
@@ -63,7 +66,12 @@ int main(void)
     local_transport_activate(&transport);
     snet_init(&transport.base.platform, &timing);
 
-    squid_fd = squid_open();
+    squid_fd = squid_open(
+        tx_ring,
+        (uint8_t)sizeof(tx_ring),
+        rx_ring,
+        (uint8_t)sizeof(rx_ring)
+    );
     if (squid_fd < 0) {
         fprintf(stderr, "error: squid_open failed\n");
         local_transport_close(&transport);

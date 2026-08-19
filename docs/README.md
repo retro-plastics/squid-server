@@ -43,7 +43,7 @@ main()
               │     ├── serial: serial_transport_open/activate
               │     └── local:  local_transport_listen/accept/activate
               ├── snet_init()                libsquid protocol engine
-              ├── open_plugin_sockets()      squid_open/squid_bind × N
+              ├── open_plugin_sockets()      caller-owned rings + squid_open/bind × N
               ├── run_dispatch_loop()
               │     ├── [wait for squid link handshake]
               │     └── snet_burst() + dispatch_received_packets() × N
@@ -55,7 +55,13 @@ main()
 
 All modules are compiled into a single static library `squid_server_core` and linked into the `squid-server` executable. Plugins live in separate shared libraries loaded at runtime via `dlopen`.
 
-There is intentionally no threading. The dispatch loop calls `snet_burst()` and `usleep(5000)` (5 ms) per iteration, well within one 20 ms libsquid tick period. The loop exits when `snet_link_is_up()` returns false (peer restart or max retransmit exceeded) or a termination signal arrives.
+There is intentionally no threading. The dispatch loop calls `snet_burst()` and `usleep(5000)` (5 ms) per iteration, well within one 20 ms libsquid tick period. A 10-tick keepalive detects a silent peer, and the loop exits when `snet_link_is_up()` returns false (peer restart, liveness timeout, or max retransmit exceeded) or a termination signal arrives.
+
+libsquid owns no socket memory in the current release. `server_runtime` supplies
+255-byte TX and RX rings for every application port, giving each direction 254
+usable bytes. Plugin responses use a separate per-port pending buffer: when
+`squid_send()` reports backpressure, dispatch pauses that port's receive side
+and retries the response on a later iteration.
 
 ---
 
@@ -232,7 +238,9 @@ Unix domain socket (SOCK_STREAM) transport for same-machine testing.
 | `local_transport_activate(transport)` | Set the module-level `transport_fd` to `client_fd`. Call before `snet_init()`. |
 | `local_transport_close(transport)` | Close all fds; unlink the socket file on the server side. |
 
-`recv_char` uses `MSG_DONTWAIT` so `snet_burst()` never blocks.
+`recv_char` uses `MSG_DONTWAIT` so `snet_burst()` never blocks. `send_char`
+uses `MSG_NOSIGNAL`, allowing a closed peer to surface as an error and
+libsquid liveness loss instead of terminating the server with `SIGPIPE`.
 
 ### Serial transport (`src/transport/serial/`)
 
@@ -465,7 +473,10 @@ The registry holds `const struct server_plugin *` pointers. The plugin structs a
 
 ### `lib/CMakeLists.txt`
 
-Fetches `libsquid` from GitHub via `FetchContent` at configure time using a pinned commit hash. The `libsquid` target is then available as `squid` for linking.
+Queries GitHub's releases API at configure time, then fetches the latest
+non-prerelease `libsquid` tag via `FetchContent`. The sources are compiled with
+`SQUID_MAX_SOCKETS=15` so every application channel remains available. The
+resulting library target is exposed as `squid` for linking.
 
 ### `src/CMakeLists.txt`
 

@@ -39,7 +39,8 @@
  */
 #define SYS_CHANNEL 1
 
-#define PACKET_MAX 256
+#define SQUID_RING_SIZE 255U
+#define PACKET_MAX (SQUID_RING_SIZE - 1U)
 
 static const squid_timing_t timing = { 6U, 0U, 0U, 3U };
 
@@ -58,6 +59,8 @@ int main(int argc, char **argv)
     const char *command;
     size_t command_len;
     uint8_t rx_buf[PACKET_MAX];
+    uint8_t tx_ring[SQUID_RING_SIZE];
+    uint8_t rx_ring[SQUID_RING_SIZE];
     int received = 0;
 
     if (argc != 2) {
@@ -70,6 +73,12 @@ int main(int argc, char **argv)
 
     if (command_len == 0U) {
         print_usage(argv[0]);
+        return 1;
+    }
+
+    if (command_len > PACKET_MAX) {
+        fprintf(stderr, "error: command is too long (maximum %u bytes)\n",
+                (unsigned int)PACKET_MAX);
         return 1;
     }
 
@@ -86,7 +95,12 @@ int main(int argc, char **argv)
     local_transport_activate(&transport);
     snet_init(&transport.base.platform, &timing);
 
-    squid_fd = squid_open();
+    squid_fd = squid_open(
+        tx_ring,
+        (uint8_t)sizeof(tx_ring),
+        rx_ring,
+        (uint8_t)sizeof(rx_ring)
+    );
     if (squid_fd < 0) {
         fprintf(stderr, "error: squid_open failed\n");
         local_transport_close(&transport);

@@ -36,7 +36,8 @@ The server supports two startup modes:
 - CMake 3.16 or later
 - GCC or Clang with C11 support
 - `libdl` (part of glibc, present on all standard Linux systems)
-- Internet access during the first build (CMake fetches `libsquid` via FetchContent)
+- Internet access during configure (CMake resolves and fetches the latest
+  published `libsquid` release)
 
 ---
 
@@ -49,6 +50,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 # build server, plugins, and tests
 cmake --build build
 ```
+
+Each configure resolves GitHub's latest non-prerelease `libsquid` release and
+builds that tagged source, so the server never follows unreleased branch commits.
 
 After a successful build the staged tree is ready at `bin/opt/squid/`:
 
@@ -335,6 +339,12 @@ plugin 2 /opt/squid/lib/plugins/libmyplugin.so
 | `server_plugin_start_fn` | Called once after the plugin is loaded |
 | `server_plugin_stop_fn` | Called once before the plugin is unloaded |
 | `server_plugin_handle_packet_fn` | Called for every incoming packet on the registered port |
+
+The current libsquid release uses 255-byte caller-owned socket rings. One byte
+is reserved by the ring, so requests and responses are limited to 254 bytes;
+plugins should always respect `response->packet_capacity`. If libsquid applies
+TX backpressure, the server retains the response and retries it on later loop
+iterations.
 
 ### Port constants
 

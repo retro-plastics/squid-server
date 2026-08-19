@@ -26,6 +26,13 @@
 #include "squid_server/plugin_api.h"
 
 /*
+ * libsquid uses caller-owned rings with 8-bit indices.  A ring may
+ * contain at most 255 bytes and reserves one byte to distinguish full from
+ * empty, leaving 254 bytes of usable capacity per socket direction.
+ */
+#define server_squid_ring_size 255U
+
+/*
  * All state for one server run.  Every subsystem is embedded by
  * value so that a single stack allocation in main() holds the
  * entire server.
@@ -44,6 +51,10 @@ struct server_runtime {
      * Port 0 is not exposed on the wire.
      */
     int squid_fds[server_port_count];
+    uint8_t squid_tx_rings[server_port_count][server_squid_ring_size];
+    uint8_t squid_rx_rings[server_port_count][server_squid_ring_size];
+    uint8_t pending_responses[server_port_count][server_squid_ring_size - 1U];
+    size_t pending_response_sizes[server_port_count];
 };
 
 /* Zero-initialise runtime and copy config into it. */
