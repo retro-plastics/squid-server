@@ -13,6 +13,7 @@
 #define retro_vault_download_limit (64U * 1024U * 1024U)
 #define retro_vault_page_header_size 5U
 #define retro_vault_download_header_size 11U
+#define retro_vault_api_path_max 768U
 
 static void write_u16(uint8_t *output, uint16_t value)
 {
@@ -145,6 +146,8 @@ static void free_package(struct retro_vault_package *package)
     free(package->vendor);
     free(package->platform_id);
     free(package->platform_name);
+    free(package->model_id);
+    free(package->model_name);
     free(package->version);
     free(package->description);
 
@@ -193,8 +196,7 @@ void free_retro_vault_context(struct retro_vault_context *context)
 
     free_packages(context->packages, context->package_count);
     retro_vault_buffer_free(&context->download_data);
-    free(context->download_package_id);
-    free(context->download_id);
+    free(context->download_path);
     memset(context, 0, sizeof(*context));
 }
 
@@ -402,6 +404,8 @@ static int parse_package(
         (get_json_string_member(object, "vendor", 0, &package->vendor) != 0) ||
         (get_json_string_member(object, "platformId", 0, &package->platform_id) != 0) ||
         (get_json_string_member(object, "platformName", 0, &package->platform_name) != 0) ||
+        (get_json_string_member(object, "modelId", 0, &package->model_id) != 0) ||
+        (get_json_string_member(object, "modelName", 0, &package->model_name) != 0) ||
         (get_json_string_member(object, "version", 0, &package->version) != 0) ||
         (get_json_string_member(object, "description", 0, &package->description) != 0) ||
         (get_json_string_member(object, "rating", 0, &rating) != 0) ||
@@ -477,7 +481,7 @@ static uint8_t http_error_status(int http_result, long status_code)
     if (http_result == retro_vault_http_too_large) {
         return RETRO_VAULT_STATUS_TOO_LARGE;
     }
-    if (status_code == 404L) {
+    if ((status_code == 404L) || (status_code == 409L)) {
         return RETRO_VAULT_STATUS_NOT_FOUND;
     }
     return RETRO_VAULT_STATUS_API_UNAVAILABLE;
@@ -588,16 +592,71 @@ static int text_contains_case_insensitive(
     return 0;
 }
 
+static int text_is_identifier(const char *text, const char *identifier)
+{
+    return (identifier != NULL) &&
+        text_equals_case_insensitive(
+            text,
+            (const uint8_t *)identifier,
+            strlen(identifier)
+        );
+}
+
+static int filter_matches_alias(
+    const uint8_t *filter,
+    size_t filter_size,
+    const char *canonical,
+    const char *legacy
+)
+{
+    return text_equals_case_insensitive(canonical, filter, filter_size) ||
+        text_equals_case_insensitive(legacy, filter, filter_size);
+}
+
+static int platform_is_idp(const char *platform_id)
+{
+    return text_is_identifier(platform_id, "idp") ||
+        text_is_identifier(platform_id, "iskra-delta-partner");
+}
+
+static int platform_matches_filter(
+    const char *platform_id,
+    const uint8_t *filter,
+    size_t filter_size
+)
+{
+    if (text_equals_case_insensitive(platform_id, filter, filter_size)) {
+        return 1;
+    }
+    if (platform_is_idp(platform_id) &&
+        filter_matches_alias(filter, filter_size, "idp", "iskra-delta-partner")) {
+        return 1;
+    }
+    if ((text_is_identifier(platform_id, "zxs") ||
+         text_is_identifier(platform_id, "zx-spectrum")) &&
+        filter_matches_alias(filter, filter_size, "zxs", "zx-spectrum")) {
+        return 1;
+    }
+    return 0;
+}
+
 static int package_matches(
     const struct retro_vault_package *package,
     const uint8_t *platform,
     size_t platform_size,
+    const uint8_t *model,
+    size_t model_size,
     const uint8_t *query,
     size_t query_size
 )
 {
     if ((platform_size > 0U) &&
-        !text_equals_case_insensitive(package->platform_id, platform, platform_size)) {
+        !platform_matches_filter(package->platform_id, platform, platform_size)) {
+        return 0;
+    }
+
+    if ((model_size > 0U) &&
+        !text_equals_case_insensitive(package->model_id, model, model_size)) {
         return 0;
     }
 
@@ -669,6 +728,8 @@ static int write_catalog_page(
     uint16_t cursor,
     const uint8_t *platform,
     size_t platform_size,
+    const uint8_t *model,
+    size_t model_size,
     const uint8_t *query,
     size_t query_size,
     uint8_t *response,
@@ -693,6 +754,8 @@ static int write_catalog_page(
             &context->packages[package_index],
             platform,
             platform_size,
+            model,
+            model_size,
             query,
             query_size
         )) {
@@ -1037,22 +1100,147 @@ static int identifier_is_safe(const uint8_t *identifier, size_t size)
         if (!(((character >= 'a') && (character <= 'z')) ||
               ((character >= 'A') && (character <= 'Z')) ||
               ((character >= '0') && (character <= '9')) ||
-              (character == '-'))) {
+              (character == '-') ||
+              (character == '_'))) {
             return 0;
         }
     }
     return 1;
 }
 
-static char *duplicate_bytes(const uint8_t *data, size_t size)
+static int catalog_identifier_is_safe(const char *text)
 {
-    char *text = malloc(size + 1U);
-    if (text == NULL) {
+    return (text != NULL) &&
+        (text[0] != '\0') &&
+        identifier_is_safe((const uint8_t *)text, strlen(text));
+}
+
+static const struct retro_vault_download *find_download(
+    const struct retro_vault_package *package,
+    const uint8_t *id,
+    size_t id_size
+)
+{
+    size_t index = 0U;
+
+    if (package == NULL) {
         return NULL;
     }
-    memcpy(text, data, size);
-    text[size] = '\0';
-    return text;
+    for (index = 0U; index < package->download_count; ++index) {
+        if (text_equals_case_insensitive(
+            package->downloads[index].id,
+            id,
+            id_size
+        )) {
+            return &package->downloads[index];
+        }
+    }
+    return NULL;
+}
+
+static int build_download_path(
+    const struct retro_vault_package *package,
+    const char *download_id,
+    int disambiguate,
+    char *path,
+    size_t path_size
+)
+{
+    const char *platform_id = NULL;
+    const char *model_id = NULL;
+    int written = 0;
+
+    if ((package == NULL) ||
+        !catalog_identifier_is_safe(package->id) ||
+        !catalog_identifier_is_safe(download_id) ||
+        (path == NULL) ||
+        (path_size == 0U)) {
+        return -1;
+    }
+
+    platform_id = catalog_identifier_is_safe(package->platform_id)
+        ? package->platform_id
+        : NULL;
+    model_id = catalog_identifier_is_safe(package->model_id)
+        ? package->model_id
+        : NULL;
+
+    if ((platform_id != NULL) && !disambiguate) {
+        if (model_id != NULL) {
+            written = snprintf(
+                path,
+                path_size,
+                "/api/v1/catalog/packages/%s/%s/%s/downloads/%s",
+                platform_id,
+                model_id,
+                package->id,
+                download_id
+            );
+        } else {
+            written = snprintf(
+                path,
+                path_size,
+                "/api/v1/catalog/packages/%s/%s/downloads/%s",
+                platform_id,
+                package->id,
+                download_id
+            );
+        }
+    } else if (disambiguate && (platform_id != NULL) && (model_id != NULL)) {
+        written = snprintf(
+            path,
+            path_size,
+            "/api/v1/catalog/packages/%s/downloads/%s?platformId=%s&modelId=%s",
+            package->id,
+            download_id,
+            platform_id,
+            model_id
+        );
+    } else if (disambiguate && (platform_id != NULL)) {
+        written = snprintf(
+            path,
+            path_size,
+            "/api/v1/catalog/packages/%s/downloads/%s?platformId=%s",
+            package->id,
+            download_id,
+            platform_id
+        );
+    } else {
+        written = snprintf(
+            path,
+            path_size,
+            "/api/v1/catalog/packages/%s/downloads/%s",
+            package->id,
+            download_id
+        );
+    }
+
+    return ((written < 0) || ((size_t)written >= path_size)) ? -1 : 0;
+}
+
+static uint8_t fetch_download(
+    struct retro_vault_context *context,
+    const char *path,
+    struct retro_vault_buffer *response,
+    long *status_code
+)
+{
+    int result = 0;
+
+    retro_vault_buffer_init(response);
+    result = context->http.get(
+        context->http.user_data,
+        path,
+        retro_vault_download_limit,
+        response,
+        status_code
+    );
+    if ((result != retro_vault_http_ok) ||
+        (*status_code < 200L) || (*status_code >= 300L)) {
+        retro_vault_buffer_free(response);
+        return http_error_status(result, *status_code);
+    }
+    return RETRO_VAULT_STATUS_OK;
 }
 
 static uint8_t ensure_download(
@@ -1063,69 +1251,77 @@ static uint8_t ensure_download(
     size_t download_id_size
 )
 {
-    char *package_text = NULL;
-    char *download_text = NULL;
-    char path[600];
+    const struct retro_vault_package *package = NULL;
+    const struct retro_vault_download *download = NULL;
+    char path[retro_vault_api_path_max];
+    char *path_copy = NULL;
     struct retro_vault_buffer response;
     long status_code = 0L;
-    int result = 0;
-
-    if ((context->download_package_id != NULL) &&
-        (context->download_id != NULL) &&
-        (strlen(context->download_package_id) == package_id_size) &&
-        (strlen(context->download_id) == download_id_size) &&
-        (memcmp(context->download_package_id, package_id, package_id_size) == 0) &&
-        (memcmp(context->download_id, download_id, download_id_size) == 0)) {
-        return RETRO_VAULT_STATUS_OK;
-    }
+    uint8_t status = RETRO_VAULT_STATUS_OK;
 
     if (!identifier_is_safe(package_id, package_id_size) ||
         !identifier_is_safe(download_id, download_id_size)) {
         return RETRO_VAULT_STATUS_BAD_REQUEST;
     }
 
-    package_text = duplicate_bytes(package_id, package_id_size);
-    download_text = duplicate_bytes(download_id, download_id_size);
-    if ((package_text == NULL) || (download_text == NULL)) {
-        free(package_text);
-        free(download_text);
+    status = ensure_catalog(context);
+    if (status != RETRO_VAULT_STATUS_OK) {
+        return status;
+    }
+
+    package = find_package(context, package_id, package_id_size);
+    if (package == NULL) {
+        return RETRO_VAULT_STATUS_NOT_FOUND;
+    }
+
+    download = find_download(package, download_id, download_id_size);
+    if (download == NULL) {
+        return RETRO_VAULT_STATUS_NOT_FOUND;
+    }
+
+    if (build_download_path(package, download->id, 0, path, sizeof(path)) != 0) {
         return RETRO_VAULT_STATUS_INTERNAL_ERROR;
     }
 
-    if (snprintf(
-        path,
-        sizeof(path),
-        "/api/v1/catalog/packages/%s/downloads/%s",
-        package_text,
-        download_text
-    ) >= (int)sizeof(path)) {
-        free(package_text);
-        free(download_text);
-        return RETRO_VAULT_STATUS_BAD_REQUEST;
+    if ((context->download_path != NULL) &&
+        (strcmp(context->download_path, path) == 0)) {
+        return RETRO_VAULT_STATUS_OK;
     }
 
-    retro_vault_buffer_init(&response);
-    result = context->http.get(
-        context->http.user_data,
-        path,
-        retro_vault_download_limit,
-        &response,
-        &status_code
-    );
-    if ((result != retro_vault_http_ok) ||
-        (status_code < 200L) || (status_code >= 300L)) {
+    status = fetch_download(context, path, &response, &status_code);
+    if ((status != RETRO_VAULT_STATUS_OK) && (status_code == 409L)) {
+        char disambiguated[retro_vault_api_path_max];
+
+        if ((build_download_path(
+            package,
+            download->id,
+            1,
+            disambiguated,
+            sizeof(disambiguated)
+        ) == 0) &&
+            (strcmp(disambiguated, path) != 0)) {
+            status = fetch_download(
+                context,
+                disambiguated,
+                &response,
+                &status_code
+            );
+        }
+    }
+    if (status != RETRO_VAULT_STATUS_OK) {
+        return status;
+    }
+
+    path_copy = duplicate_text(path);
+    if (path_copy == NULL) {
         retro_vault_buffer_free(&response);
-        free(package_text);
-        free(download_text);
-        return http_error_status(result, status_code);
+        return RETRO_VAULT_STATUS_INTERNAL_ERROR;
     }
 
     retro_vault_buffer_free(&context->download_data);
-    free(context->download_package_id);
-    free(context->download_id);
+    free(context->download_path);
     context->download_data = response;
-    context->download_package_id = package_text;
-    context->download_id = download_text;
+    context->download_path = path_copy;
     return RETRO_VAULT_STATUS_OK;
 }
 
@@ -1165,7 +1361,9 @@ static int handle_list_or_search(
 {
     uint16_t cursor = 0U;
     uint8_t platform_size = 0U;
+    uint8_t model_size = 0U;
     const uint8_t *platform = NULL;
+    const uint8_t *model = NULL;
     const uint8_t *query = NULL;
     uint8_t query_size = 0U;
     size_t offset = 4U;
@@ -1196,11 +1394,22 @@ static int handle_list_or_search(
                 opcode, RETRO_VAULT_STATUS_BAD_REQUEST, response, response_capacity);
         }
         query_size = request[offset++];
-        if ((query_size == 0U) || ((size_t)query_size != request_size - offset)) {
+        if ((query_size == 0U) ||
+            ((size_t)query_size > request_size - offset)) {
             return write_error_response(
                 opcode, RETRO_VAULT_STATUS_BAD_REQUEST, response, response_capacity);
         }
         query = request + offset;
+        offset += query_size;
+    }
+
+    if (offset < request_size) {
+        model_size = request[offset++];
+        if ((size_t)model_size != request_size - offset) {
+            return write_error_response(
+                opcode, RETRO_VAULT_STATUS_BAD_REQUEST, response, response_capacity);
+        }
+        model = request + offset;
     } else if (offset != request_size) {
         return write_error_response(
             opcode, RETRO_VAULT_STATUS_BAD_REQUEST, response, response_capacity);
@@ -1217,6 +1426,8 @@ static int handle_list_or_search(
         cursor,
         platform,
         platform_size,
+        model,
+        model_size,
         query,
         query_size,
         response,

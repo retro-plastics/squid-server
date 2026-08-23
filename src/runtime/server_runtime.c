@@ -43,21 +43,21 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-/* Maximum payload that fits atomically in a libsquid socket ring. */
-#define server_packet_max (server_squid_ring_size - 1U)
-
 /*
  * libsquid timing parameters (values in ticks; one tick = 20 ms).
- *   timeout_ticks   6  →  120 ms resend timeout
- *   ack_delay_ticks 2  →   40 ms ACK-piggybacking window
- *   ping_ticks     10  →  200 ms keepalive heartbeat
- *   max_retries     3
+ *   timeout_ticks 200  →    4 s resend timeout (safe for slow clients and
+ *                                debug emulation)
+ *   ack_delay_ticks  1 →   20 ms for a response to piggyback its ACK;
+ *                                avoids back-to-back frames overrunning a
+ *                                polling Partner at 9600 baud
+ *   ping_ticks      0  →  disabled while plugins may block on I/O
+ *   max_retries     5
  */
 static const squid_timing_t squid_timing = {
-    .timeout_ticks = 6U,
-    .ack_delay_ticks = 2U,
-    .ping_ticks = 10U,
-    .max_retries = 3U
+    .timeout_ticks = 200U,
+    .ack_delay_ticks = 1U,
+    .ping_ticks = 0U,
+    .max_retries = 5U
 };
 
 static volatile sig_atomic_t keep_running = 1;
@@ -287,14 +287,59 @@ static void close_plugin_sockets(struct server_runtime *runtime)
 
 /* ---- packet dispatch ---- */
 
+/*
+ * libsquid channels are byte streams.  The server's plugin API is packet
+ * based, so each stream message is prefixed by its one-byte payload length.
+ * Read only the bytes needed for one packet and leave a following packet in
+ * the socket ring for the next dispatch pass.
+ */
+static int receive_plugin_packet(
+    struct server_runtime *runtime,
+    uint8_t port
+)
+{
+    size_t *size = &runtime->request_packet_sizes[port];
+    size_t *expected = &runtime->request_packet_expected[port];
+    int received = 0;
+
+    if (*expected == 0U) {
+        uint8_t wire_size = 0U;
+
+        received = squid_recv(runtime->squid_fds[port], &wire_size, 1U);
+        if (received <= 0) {
+            return received;
+        }
+        if ((wire_size == 0U) || (wire_size > server_packet_max)) {
+            write_server_log(server_log_level_warning,
+                "invalid zero-length or oversized squid packet");
+            return -1;
+        }
+        *expected = wire_size;
+        *size = 0U;
+    }
+
+    if (*size < *expected) {
+        received = squid_recv(
+            runtime->squid_fds[port],
+            runtime->request_packets[port] + *size,
+            (uint16_t)(*expected - *size)
+        );
+        if (received < 0) {
+            return -1;
+        }
+        *size += (size_t)received;
+    }
+
+    return *size == *expected ? 1 : 0;
+}
+
 static void dispatch_received_packets(struct server_runtime *runtime)
 {
     uint8_t port = 0;
-    uint8_t rx_buf[server_packet_max];
 
     for (port = server_plugin_port_min; port <= server_plugin_port_max; ++port) {
         const struct server_plugin *plugin = NULL;
-        int received = 0;
+        int packet_ready = 0;
 
         if (runtime->squid_fds[port] < 0) {
             continue;
@@ -317,13 +362,8 @@ static void dispatch_received_packets(struct server_runtime *runtime)
             runtime->pending_response_sizes[port] = 0U;
         }
 
-        received = squid_recv(
-            runtime->squid_fds[port],
-            rx_buf,
-            (uint16_t)sizeof(rx_buf)
-        );
-
-        if (received <= 0) {
+        packet_ready = receive_plugin_packet(runtime, port);
+        if (packet_ready <= 0) {
             continue;
         }
 
@@ -336,11 +376,11 @@ static void dispatch_received_packets(struct server_runtime *runtime)
             struct server_packet_view request;
             struct server_packet_buffer response;
 
-            request.packet_data = rx_buf;
-            request.packet_size = (size_t)received;
+            request.packet_data = runtime->request_packets[port];
+            request.packet_size = runtime->request_packet_sizes[port];
 
-            response.packet_data     = runtime->pending_responses[port];
-            response.packet_capacity = sizeof(runtime->pending_responses[port]);
+            response.packet_data = runtime->pending_responses[port] + 1U;
+            response.packet_capacity = server_packet_max;
             response.packet_size     = 0U;
 
             if (plugin->handle_packet(
@@ -350,8 +390,8 @@ static void dispatch_received_packets(struct server_runtime *runtime)
                 &response
             ) == 0) {
                 if ((response.packet_size > 0U) &&
-                    ((response.packet_data != runtime->pending_responses[port]) ||
-                     (response.packet_size > sizeof(runtime->pending_responses[port])))) {
+                    ((response.packet_data != runtime->pending_responses[port] + 1U) ||
+                     (response.packet_size > server_packet_max))) {
                     char msg[192];
                     snprintf(
                         msg,
@@ -362,17 +402,24 @@ static void dispatch_received_packets(struct server_runtime *runtime)
                     );
                     write_server_log(server_log_level_warning, msg);
                 } else if (response.packet_size > 0U) {
+                    size_t framed_size = response.packet_size + 1U;
+
+                    runtime->pending_responses[port][0] =
+                        (uint8_t)response.packet_size;
                     if (squid_send(
                         runtime->squid_fds[port],
                         runtime->pending_responses[port],
-                        (uint16_t)response.packet_size
+                        (uint16_t)framed_size
                     ) >= 0) {
-                        response.packet_size = 0U;
+                        framed_size = 0U;
                     }
 
-                    runtime->pending_response_sizes[port] = response.packet_size;
+                    runtime->pending_response_sizes[port] = framed_size;
                 }
             }
+
+            runtime->request_packet_sizes[port] = 0U;
+            runtime->request_packet_expected[port] = 0U;
         }
     }
 }
@@ -381,27 +428,37 @@ static void dispatch_received_packets(struct server_runtime *runtime)
 
 static void run_dispatch_loop(struct server_runtime *runtime)
 {
-    /* Wait for the squid link handshake to complete. */
-    while (keep_running && !snet_link_is_up()) {
-        snet_burst();
-        usleep(5000);
-    }
+    while (keep_running) {
+        /* Wait for the first client or a replacement client's handshake. */
+        while (keep_running && !snet_link_is_up()) {
+            snet_burst();
+            usleep(5000);
+        }
 
-    if (!keep_running) {
-        return;
-    }
+        if (!keep_running) {
+            return;
+        }
 
-    write_server_log(server_log_level_info, "squid link established");
+        write_server_log(server_log_level_info, "squid link established");
 
-    /* Run until a signal arrives or the link drops. */
-    while (keep_running && snet_link_is_up()) {
-        snet_burst();
-        dispatch_received_packets(runtime);
-        usleep(5000);   /* 5 ms — well within one 20 ms tick period */
-    }
+        while (keep_running && snet_link_is_up()) {
+            snet_burst();
+            dispatch_received_packets(runtime);
+            usleep(5000);   /* 5 ms — well within one 20 ms tick period */
+        }
 
-    if (!snet_link_is_up()) {
-        write_server_log(server_log_level_info, "squid link lost");
+        if (!snet_link_is_up()) {
+            uint8_t port = 0U;
+
+            write_server_log(server_log_level_info, "squid link lost; waiting for a new handshake");
+            for (port = server_plugin_port_min;
+                 port <= server_plugin_port_max;
+                 ++port) {
+                runtime->request_packet_sizes[port] = 0U;
+                runtime->request_packet_expected[port] = 0U;
+                runtime->pending_response_sizes[port] = 0U;
+            }
+        }
     }
 }
 

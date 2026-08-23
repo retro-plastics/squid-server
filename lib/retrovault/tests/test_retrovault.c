@@ -8,12 +8,14 @@
 static const char catalog_json[] =
     "["
     "{"
-      "\"id\":\"zxs-alpha\","
-      "\"name\":\"Alpha Game\","
-      "\"vendor\":\"Alpha Works\","
-      "\"platformId\":\"zx-spectrum\","
+      "\"id\":\"manic-miner\","
+      "\"name\":\"Manic Miner\","
+      "\"vendor\":\"Software Projects\","
+      "\"platformId\":\"zxs\","
       "\"platformName\":\"ZX Spectrum\","
-      "\"releaseYear\":1985,"
+      "\"modelId\":null,"
+      "\"modelName\":null,"
+      "\"releaseYear\":1983,"
       "\"version\":\"1.0\","
       "\"rating\":\"Great\","
       "\"description\":\"Fast arcade action\","
@@ -22,9 +24,10 @@ static const char catalog_json[] =
         "\"id\":\"complete\","
         "\"label\":\"Cassette image\","
         "\"format\":\"TZX\","
+        "\"downloadUrl\":\"/api/v1/catalog/packages/zxs/manic-miner/downloads/complete\","
         "\"files\":[{"
-          "\"fileName\":\"ALPHA.TZX\","
-          "\"downloadUrl\":\"/api/content/zxs-alpha/ALPHA.TZX\","
+          "\"fileName\":\"MANIC.TZX\","
+          "\"downloadUrl\":\"/api/content/zxs/manic-miner/MANIC.TZX\","
           "\"sizeBytes\":600,"
           "\"sha256\":null"
         "}]"
@@ -33,17 +36,30 @@ static const char catalog_json[] =
       "\"screenshotUrls\":[]"
     "},"
     "{"
-      "\"id\":\"idp-sah\","
+      "\"id\":\"lunatik\","
       "\"name\":\"\\u0160ah\","
       "\"vendor\":\"Iskra Delta\","
-      "\"platformId\":\"iskra-delta-partner\","
+      "\"platformId\":\"idp\","
       "\"platformName\":\"Iskra Delta Partner\","
+      "\"modelId\":\"gdp\","
+      "\"modelName\":\"GDP\","
       "\"releaseYear\":2024,"
       "\"version\":\"1.0\","
       "\"rating\":\"Legendary\","
       "\"description\":\"Chess for the Partner\","
       "\"files\":[],"
-      "\"downloads\":[],"
+      "\"downloads\":[{"
+        "\"id\":\"complete\","
+        "\"label\":\"Program file\","
+        "\"format\":\"COM\","
+        "\"downloadUrl\":\"/api/v1/catalog/packages/idp/gdp/lunatik/downloads/complete\","
+        "\"files\":[{"
+          "\"fileName\":\"LUNATIK.COM\","
+          "\"downloadUrl\":\"/api/content/idp/gdp/lunatik/LUNATIK.COM\","
+          "\"sizeBytes\":32,"
+          "\"sha256\":null"
+        "}]"
+      "}],"
       "\"documents\":[],"
       "\"screenshotUrls\":[]"
     "}"
@@ -90,7 +106,7 @@ static int mock_http_get(
 
     if (strcmp(
         path,
-        "/api/v1/catalog/packages/zxs-alpha/downloads/complete"
+        "/api/v1/catalog/packages/zxs/manic-miner/downloads/complete"
     ) == 0) {
         uint8_t data[600];
         size_t index = 0U;
@@ -103,6 +119,28 @@ static int mock_http_get(
         return retro_vault_buffer_append(response, data, sizeof(data)) == 0
             ? retro_vault_http_ok
             : retro_vault_http_error;
+    }
+
+    if (strcmp(
+        path,
+        "/api/v1/catalog/packages/idp/gdp/lunatik/downloads/complete"
+    ) == 0) {
+        uint8_t data[32];
+        size_t index = 0U;
+
+        ++state->download_calls;
+        for (index = 0U; index < sizeof(data); ++index) {
+            data[index] = (uint8_t)(0xA0U + index);
+        }
+        *status_code = 200L;
+        return retro_vault_buffer_append(response, data, sizeof(data)) == 0
+            ? retro_vault_http_ok
+            : retro_vault_http_error;
+    }
+
+    if (strcmp(path, "/api/v1/catalog/packages/lunatik/downloads/complete") == 0) {
+        *status_code = 409L;
+        return retro_vault_http_ok;
     }
 
     *status_code = 404L;
@@ -176,8 +214,8 @@ static int test_list(
     if ((size <= 5) || (response[1] != RETRO_VAULT_STATUS_OK) ||
         (read_u16(response + 2U) != RETRO_VAULT_CURSOR_END) ||
         (response[4] != 2U) ||
-        (parse_list_entry(response, (size_t)size, &offset, "zxs-alpha", "Alpha Game") != 0) ||
-        (parse_list_entry(response, (size_t)size, &offset, "idp-sah", "\xC5\xA0" "ah") != 0) ||
+        (parse_list_entry(response, (size_t)size, &offset, "manic-miner", "Manic Miner") != 0) ||
+        (parse_list_entry(response, (size_t)size, &offset, "lunatik", "\xC5\xA0" "ah") != 0) ||
         (offset != (size_t)size) || (http_state->catalog_calls != 1U)) {
         return 1;
     }
@@ -185,6 +223,35 @@ static int test_list(
 }
 
 static int test_filtered_list(struct retro_vault_context *context)
+{
+    static const char platform[] = "idp";
+    uint8_t request[4U + sizeof(platform) - 1U];
+    uint8_t response[254];
+    size_t offset = 5U;
+    int size = 0;
+
+    request[0] = RETRO_VAULT_OP_LIST;
+    request[1] = 0U;
+    request[2] = 0U;
+    request[3] = (uint8_t)(sizeof(platform) - 1U);
+    memcpy(request + 4U, platform, sizeof(platform) - 1U);
+
+    size = handle_retro_vault_request(
+        context, request, sizeof(request), response, sizeof(response));
+    if ((size <= 5) || (response[4] != 1U) ||
+        (parse_list_entry(
+            response,
+            (size_t)size,
+            &offset,
+            "lunatik",
+            "\xC5\xA0" "ah"
+        ) != 0)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int test_legacy_platform_list(struct retro_vault_context *context)
 {
     static const char platform[] = "iskra-delta-partner";
     uint8_t request[4U + sizeof(platform) - 1U];
@@ -205,12 +272,75 @@ static int test_filtered_list(struct retro_vault_context *context)
             response,
             (size_t)size,
             &offset,
-            "idp-sah",
+            "lunatik",
             "\xC5\xA0" "ah"
         ) != 0)) {
         return 1;
     }
     return 0;
+}
+
+static int test_gdp_model_list(struct retro_vault_context *context)
+{
+    static const char platform[] = "idp";
+    static const char model[] = "gdp";
+    uint8_t request[5U + sizeof(platform) - 1U + sizeof(model) - 1U];
+    uint8_t response[254];
+    size_t offset = 5U;
+    int size = 0;
+
+    request[0] = RETRO_VAULT_OP_LIST;
+    request[1] = 0U;
+    request[2] = 0U;
+    request[3] = (uint8_t)(sizeof(platform) - 1U);
+    memcpy(request + 4U, platform, sizeof(platform) - 1U);
+    request[4U + sizeof(platform) - 1U] = (uint8_t)(sizeof(model) - 1U);
+    memcpy(
+        request + 5U + sizeof(platform) - 1U,
+        model,
+        sizeof(model) - 1U
+    );
+
+    size = handle_retro_vault_request(
+        context, request, sizeof(request), response, sizeof(response));
+    if ((size <= 5) || (response[4] != 1U) ||
+        (parse_list_entry(
+            response,
+            (size_t)size,
+            &offset,
+            "lunatik",
+            "\xC5\xA0" "ah"
+        ) != 0)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int test_p_model_list(struct retro_vault_context *context)
+{
+    static const char platform[] = "idp";
+    static const char model[] = "p";
+    uint8_t request[5U + sizeof(platform) - 1U + sizeof(model) - 1U];
+    uint8_t response[254];
+    int size = 0;
+
+    request[0] = RETRO_VAULT_OP_LIST;
+    request[1] = 0U;
+    request[2] = 0U;
+    request[3] = (uint8_t)(sizeof(platform) - 1U);
+    memcpy(request + 4U, platform, sizeof(platform) - 1U);
+    request[4U + sizeof(platform) - 1U] = (uint8_t)(sizeof(model) - 1U);
+    memcpy(
+        request + 5U + sizeof(platform) - 1U,
+        model,
+        sizeof(model) - 1U
+    );
+
+    size = handle_retro_vault_request(
+        context, request, sizeof(request), response, sizeof(response));
+    return ((size == 5) &&
+        (response[1] == RETRO_VAULT_STATUS_OK) &&
+        (response[4] == 0U)) ? 0 : 1;
 }
 
 static int test_search(struct retro_vault_context *context)
@@ -235,7 +365,7 @@ static int test_search(struct retro_vault_context *context)
             response,
             (size_t)size,
             &offset,
-            "idp-sah",
+            "lunatik",
             "\xC5\xA0" "ah"
         ) != 0)) {
         return 1;
@@ -245,7 +375,7 @@ static int test_search(struct retro_vault_context *context)
 
 static int test_info(struct retro_vault_context *context)
 {
-    static const char package_id[] = "zxs-alpha";
+    static const char package_id[] = "manic-miner";
     uint8_t request[4U + sizeof(package_id) - 1U];
     uint8_t response[254];
     uint16_t cursor = 0U;
@@ -282,7 +412,7 @@ static int test_info(struct retro_vault_context *context)
                 return 1;
             }
             if ((type == RETRO_VAULT_INFO_YEAR) &&
-                (value_size == 2U) && (read_u16(response + offset) == 1985U)) {
+                (value_size == 2U) && (read_u16(response + offset) == 1983U)) {
                 saw_year = 1;
             }
             if ((type == RETRO_VAULT_INFO_DOWNLOAD) && (value_size > 8U)) {
@@ -306,7 +436,7 @@ static int test_download(
     struct mock_http_state *http_state
 )
 {
-    static const char package_id[] = "zxs-alpha";
+    static const char package_id[] = "manic-miner";
     static const char download_id[] = "complete";
     uint8_t request[
         8U + sizeof(package_id) - 1U + sizeof(download_id) - 1U
@@ -343,6 +473,44 @@ static int test_download(
     if ((size != 31) || (read_u32(response + 2U) != 20U) ||
         (response[11] != 20U) || (response[30] != 39U) ||
         (http_state->download_calls != 1U)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int test_model_download(
+    struct retro_vault_context *context,
+    struct mock_http_state *http_state
+)
+{
+    static const char package_id[] = "lunatik";
+    static const char download_id[] = "complete";
+    uint8_t request[
+        8U + sizeof(package_id) - 1U + sizeof(download_id) - 1U
+    ];
+    uint8_t response[64];
+    size_t cursor = 7U;
+    int size = 0;
+
+    request[0] = RETRO_VAULT_OP_DOWNLOAD;
+    request[1] = 0U;
+    request[2] = 0U;
+    request[3] = 0U;
+    request[4] = 0U;
+    request[5] = 16U;
+    request[6] = (uint8_t)(sizeof(package_id) - 1U);
+    memcpy(request + cursor, package_id, sizeof(package_id) - 1U);
+    cursor += sizeof(package_id) - 1U;
+    request[cursor++] = (uint8_t)(sizeof(download_id) - 1U);
+    memcpy(request + cursor, download_id, sizeof(download_id) - 1U);
+
+    size = handle_retro_vault_request(
+        context, request, sizeof(request), response, sizeof(response));
+    if ((size != 27) || (response[1] != RETRO_VAULT_STATUS_OK) ||
+        (read_u32(response + 2U) != 0U) ||
+        (read_u32(response + 6U) != 32U) ||
+        (response[10] != 16U) || (response[11] != 0xA0U) ||
+        (response[26] != 0xAFU) || (http_state->download_calls != 2U)) {
         return 1;
     }
     return 0;
@@ -544,9 +712,13 @@ int main(int argc, char **argv)
     RUN_TEST(test_capabilities(&context));
     RUN_TEST(test_list(&context, &http_state));
     RUN_TEST(test_filtered_list(&context));
+    RUN_TEST(test_legacy_platform_list(&context));
+    RUN_TEST(test_gdp_model_list(&context));
+    RUN_TEST(test_p_model_list(&context));
     RUN_TEST(test_search(&context));
     RUN_TEST(test_info(&context));
     RUN_TEST(test_download(&context, &http_state));
+    RUN_TEST(test_model_download(&context, &http_state));
     RUN_TEST(test_bad_request(&context));
     RUN_TEST(test_unsafe_download_id(&context));
 

@@ -70,11 +70,14 @@
  *
  * LIST:
  *   [opcode][cursor:u16][platform_len:u8][platform UTF-8]
- *   An empty platform lists every platform.
+ *   optional: [model_len:u8][model UTF-8]
+ *   An empty platform lists every platform. An omitted or empty model
+ *   lists every model. If a model is given, only that model is returned.
  *
  * SEARCH:
  *   [opcode][cursor:u16][platform_len:u8][platform UTF-8]
  *   [query_len:u8][query UTF-8]
+ *   optional: [model_len:u8][model UTF-8]
  *
  * INFO:
  *   [opcode][cursor:u16][package_id_len:u8][package_id]
@@ -83,6 +86,8 @@
  *   [opcode][offset:u32][maximum_bytes:u8]
  *   [package_id_len:u8][package_id]
  *   [download_id_len:u8][download_id]
+ *   package_id is the catalog slug. The plugin adds platform and model
+ *   from the catalog when talking to Retro Vault.
  *   maximum_bytes == 0 requests the largest chunk that fits.
  *
  * LIST/SEARCH responses

@@ -32,6 +32,9 @@
  */
 #define server_squid_ring_size 255U
 
+/* One byte in every socket message carries the packet length. */
+#define server_packet_max (server_squid_ring_size - 2U)
+
 /*
  * All state for one server run.  Every subsystem is embedded by
  * value so that a single stack allocation in main() holds the
@@ -53,6 +56,9 @@ struct server_runtime {
     int squid_fds[server_port_count];
     uint8_t squid_tx_rings[server_port_count][server_squid_ring_size];
     uint8_t squid_rx_rings[server_port_count][server_squid_ring_size];
+    uint8_t request_packets[server_port_count][server_packet_max];
+    size_t request_packet_sizes[server_port_count];
+    size_t request_packet_expected[server_port_count];
     uint8_t pending_responses[server_port_count][server_squid_ring_size - 1U];
     size_t pending_response_sizes[server_port_count];
 };

@@ -18,7 +18,9 @@ The constants are also available in
 - Every text value is a one-byte length followed by that many UTF-8 bytes.
 - Text has no trailing zero and is never escaped or padded.
 - Package and download IDs should be treated as opaque, case-insensitive
-  identifiers. Download requests accept ASCII letters, digits, and `-` in IDs.
+  identifiers. Download requests accept ASCII letters, digits, `-`, and `_`
+  in IDs. The ID is the program slug from the catalog (`lunatik`,
+  `manic-miner`), not a display name.
 - A response opcode is its request opcode with bit 7 set.
 - A successful response has status `0x00` in byte 1.
 - An error response is always just two bytes: opcode and status.
@@ -118,7 +120,13 @@ restart the traversal at cursor zero if results appear inconsistent.
 ## 6. List packages
 
 LIST returns compact ID/name pairs. An empty platform includes every platform.
-Platform matching is case-insensitive.
+Platform matching is case-insensitive. `idp` and `iskra-delta-partner` are the
+same platform, as are `zxs` and `zx-spectrum`.
+
+An optional model filter may follow the platform. An omitted or empty model
+includes every model. If a model is given, only titles with that model are
+returned. Partner model `p` has no catalog entries yet, so a `p` filter is
+an empty page until that catalog exists.
 
 ### Request
 
@@ -128,13 +136,21 @@ Platform matching is case-insensitive.
 | 1 | 2 | cursor |
 | 3 | 1 | platform length `P` |
 | 4 | `P` | platform ID bytes; absent when `P = 0` |
+| `4 + P` | 1 | optional model length `M` |
+| `5 + P` | `M` | optional model ID bytes |
 
-Request size: `4 + P` bytes.
+Request size: `4 + P` bytes, or `5 + P + M` when a model is present.
 
 For example, list ZX Spectrum packages from the beginning:
 
 ```text
-01 00 00 0b 7a 78 2d 73 70 65 63 74 72 75 6d
+01 00 00 03 7a 78 73
+```
+
+List Iskra Delta Partner GDP packages from the beginning:
+
+```text
+01 00 00 03 69 64 70 03 67 64 70
 ```
 
 ### Successful response
@@ -150,12 +166,12 @@ The five-byte page header is followed by `count` entries:
 
 Entry size: `2 + I + N` bytes. There are no separators.
 
-An illustrative one-entry final page containing ID `zxs-alpha` and name
-`Alpha Game` is:
+An illustrative one-entry final page containing ID `manic-miner` and name
+`Manic Miner` is:
 
 ```text
-81 00 ff ff 01 09 7a 78 73 2d 61 6c 70 68 61
-0a 41 6c 70 68 61 20 47 61 6d 65
+81 00 ff ff 01 0b 6d 61 6e 69 63 2d 6d 69 6e 65 72
+0b 4d 61 6e 69 63 20 4d 69 6e 65 72
 ```
 
 If one name alone is too long for a packet, the server shortens the name at a
@@ -165,7 +181,8 @@ UTF-8 character boundary. The ID is never shortened.
 
 SEARCH uses the same response records and cursor rules as LIST. Matching is
 case-insensitive and covers package ID, name, vendor, and description. The
-platform filter is applied first. The query must contain at least one byte.
+platform filter is applied first, then the optional model filter. The query
+must contain at least one byte.
 
 ### Request
 
@@ -177,8 +194,10 @@ platform filter is applied first. The query must contain at least one byte.
 | 4 | `P` | platform ID bytes; absent when `P = 0` |
 | `4 + P` | 1 | query length `Q` |
 | `5 + P` | `Q` | query bytes |
+| `5 + P + Q` | 1 | optional model length `M` |
+| `6 + P + Q` | `M` | optional model ID bytes |
 
-Request size: `5 + P + Q` bytes.
+Request size: `5 + P + Q` bytes, or `6 + P + Q + M` when a model is present.
 
 For example, search all platforms for `iskra`:
 
@@ -202,10 +221,10 @@ skipping the advertised value length.
 
 Request size: `4 + I` bytes. `I` must not be zero.
 
-For package `zxs-alpha`, the first request is:
+For package `manic-miner`, the first request is:
 
 ```text
-03 00 00 09 7a 78 73 2d 61 6c 70 68 61
+03 00 00 0b 6d 61 6e 69 63 2d 6d 69 6e 65 72
 ```
 
 ### Successful response
@@ -247,10 +266,10 @@ Rating values are:
 | 3 | Great |
 | 4 | Legendary |
 
-For example, the NAME TLV for `Alpha Game` is:
+For example, the NAME TLV for `Manic Miner` is:
 
 ```text
-02 0a 41 6c 70 68 61 20 47 61 6d 65
+02 0b 4d 61 6e 69 63 20 4d 69 6e 65 72
 ```
 
 ### Download-choice TLV
@@ -295,10 +314,10 @@ a URL or filename.
 Request size: `8 + P + D` bytes. Set `M` to zero to request the largest chunk
 the packet can hold. Otherwise, the server returns no more than `M` data bytes.
 
-For `zxs-alpha`, choice `complete`, offset zero, and at most 20 bytes:
+For `manic-miner`, choice `complete`, offset zero, and at most 20 bytes:
 
 ```text
-04 00 00 00 00 14 09 7a 78 73 2d 61 6c 70 68 61
+04 00 00 00 00 14 0b 6d 61 6e 69 63 2d 6d 69 6e 65 72
 08 63 6f 6d 70 6c 65 74 65
 ```
 
@@ -329,11 +348,31 @@ through 19 is:
 Continue at `requested_offset + N` until that offset equals `total_size`.
 Never assume the INFO aggregate size equals `total_size`.
 
-The first request for a download makes the Linux server fetch and cache the
-complete API result. A one-file choice is its original file; a multi-file
-choice is a ZIP produced by Retro Vault. Subsequent chunks of the same choice
-come from memory. Requesting another choice replaces that cache. The current
-server safety limit is 64 MiB per cached download.
+The first request for a download looks the package up in the cached catalog
+and fetches the complete API result. Titles with a model in the catalog use
+the canonical path including that model. Partner titles today are all `gdp`;
+model `p` has no entries yet. Titles with no model omit that path segment.
+
+```text
+GET /api/v1/catalog/packages/{platformId}/{modelId}/{id}/downloads/{downloadId}
+GET /api/v1/catalog/packages/idp/gdp/lunatik/downloads/complete
+```
+
+Titles without a model (Spectrum and the others today) omit that segment:
+
+```text
+GET /api/v1/catalog/packages/{platformId}/{id}/downloads/{downloadId}
+GET /api/v1/catalog/packages/zxs/manic-miner/downloads/complete
+```
+
+If the catalog entry has no platform, the plugin falls back to the unique-id
+path `/api/v1/catalog/packages/{id}/downloads/{downloadId}`. A `409` from that
+form is retried with `?platformId=` and, when present, `&modelId=`.
+
+A one-file choice is its original file; a multi-file choice is a ZIP produced
+by Retro Vault. Subsequent chunks of the same choice come from memory.
+Requesting another choice replaces that cache. The current server safety
+limit is 64 MiB per cached download.
 
 ## 10. Minimal client logic
 

@@ -44,6 +44,8 @@ struct retro_vault_package {
     char *vendor;
     char *platform_id;
     char *platform_name;
+    char *model_id;
+    char *model_name;
     char *version;
     char *description;
     uint16_t release_year;
@@ -59,8 +61,7 @@ struct retro_vault_context {
     time_t catalog_fetched_at;
     unsigned int catalog_cache_seconds;
     struct retro_vault_buffer download_data;
-    char *download_package_id;
-    char *download_id;
+    char *download_path;
 };
 
 void retro_vault_buffer_init(struct retro_vault_buffer *buffer);

@@ -1,5 +1,30 @@
 include(FetchContent)
 
+set(LIBSQUID_SOURCE_DIR "" CACHE PATH
+    "Use a local libsquid source tree instead of downloading a release"
+)
+
+if(LIBSQUID_SOURCE_DIR STREQUAL "")
+    get_filename_component(libsquid_sibling_dir
+        "${CMAKE_SOURCE_DIR}/../libsquid" ABSOLUTE
+    )
+    if(EXISTS "${libsquid_sibling_dir}/include/squid/snet.h")
+        set(LIBSQUID_SOURCE_DIR "${libsquid_sibling_dir}")
+    endif()
+endif()
+
+if(NOT LIBSQUID_SOURCE_DIR STREQUAL "")
+    if(NOT EXISTS "${LIBSQUID_SOURCE_DIR}/include/squid/snet.h")
+        message(FATAL_ERROR
+            "LIBSQUID_SOURCE_DIR is not a libsquid source tree: "
+            "${LIBSQUID_SOURCE_DIR}"
+        )
+    endif()
+    get_filename_component(libsquid_SOURCE_DIR
+        "${LIBSQUID_SOURCE_DIR}" ABSOLUTE
+    )
+    message(STATUS "Using local libsquid source: ${libsquid_SOURCE_DIR}")
+else()
 set(libsquid_release_api_url
     "https://api.github.com/repos/retro-plastics/libsquid/releases/latest"
 )
@@ -55,6 +80,7 @@ FetchContent_GetProperties(libsquid)
 
 if(NOT libsquid_POPULATED)
     FetchContent_Populate(libsquid)
+endif()
 endif()
 
 file(GLOB libsquid_sources CONFIGURE_DEPENDS "${libsquid_SOURCE_DIR}/lib/squid/*.c")
