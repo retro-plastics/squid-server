@@ -25,7 +25,7 @@
  * concrete transport struct.
  */
 struct server_transport {
-    squid_platform_t platform; /* libsquid I/O hooks — must be first */
+    squid_platform_t platform; /* libsquid I/O and allocator hooks */
 };
 
 #endif

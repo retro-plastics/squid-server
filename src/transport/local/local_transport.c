@@ -2,8 +2,8 @@
  * local_transport.c
  *
  * Unix domain socket (SOCK_STREAM) transport implementation.
- * Provides the three libsquid platform hooks — send_char,
- * recv_char, and get_tick — wired to the open client fd.
+ * Provides libsquid I/O and timing hooks wired to the open client fd, plus
+ * malloc/free hooks for its socket queues.
  * recv_char uses MSG_DONTWAIT so snet_burst() never
  * blocks.  get_tick returns a wrapping 8-bit counter in 20 ms
  * units derived from CLOCK_MONOTONIC.
@@ -25,6 +25,7 @@
 
 #include "transport/local/local_transport.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -65,9 +66,11 @@ static uint8_t local_get_tick(void)
 }
 
 static const squid_platform_t local_platform = {
-    local_send_char,
-    local_recv_char,
-    local_get_tick
+    .send_char = local_send_char,
+    .recv_char = local_recv_char,
+    .get_tick = local_get_tick,
+    .mem_alloc = malloc,
+    .mem_free = free
 };
 
 /* ---- Internal helpers ---- */

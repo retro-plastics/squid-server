@@ -3,6 +3,11 @@ include(FetchContent)
 set(LIBSQUID_SOURCE_DIR "" CACHE PATH
     "Use a local libsquid source tree instead of downloading a release"
 )
+set(LIBSQUID_GIT_TAG
+    "50039278d4f74f24891e6e78166f2cee96f3a316"
+    CACHE STRING
+    "libsquid revision to fetch when no local source tree is available"
+)
 
 if(LIBSQUID_SOURCE_DIR STREQUAL "")
     get_filename_component(libsquid_sibling_dir
@@ -25,65 +30,50 @@ if(NOT LIBSQUID_SOURCE_DIR STREQUAL "")
     )
     message(STATUS "Using local libsquid source: ${libsquid_SOURCE_DIR}")
 else()
-set(libsquid_release_api_url
-    "https://api.github.com/repos/retro-plastics/libsquid/releases/latest"
-)
-set(libsquid_release_metadata
-    "${CMAKE_BINARY_DIR}/libsquid-latest-release.json"
+    message(STATUS "Using libsquid revision: ${LIBSQUID_GIT_TAG}")
+
+    FetchContent_Declare(
+        libsquid
+        GIT_REPOSITORY https://github.com/retro-plastics/libsquid.git
+        GIT_TAG "${LIBSQUID_GIT_TAG}"
+        GIT_SHALLOW TRUE
+    )
+
+    FetchContent_GetProperties(libsquid)
+
+    if(NOT libsquid_POPULATED)
+        FetchContent_Populate(libsquid)
+    endif()
+endif()
+
+file(GLOB libsquid_sources CONFIGURE_DEPENDS
+    "${libsquid_SOURCE_DIR}/lib/squid/portable/*.c"
 )
 
-file(
-    DOWNLOAD
-    "${libsquid_release_api_url}"
-    "${libsquid_release_metadata}"
-    HTTPHEADER "Accept: application/vnd.github+json"
-    HTTPHEADER "User-Agent: squid-server-cmake"
-    HTTPHEADER "X-GitHub-Api-Version: 2022-11-28"
-    STATUS libsquid_release_status
-    TLS_VERIFY ON
-)
-
-list(GET libsquid_release_status 0 libsquid_release_status_code)
-list(GET libsquid_release_status 1 libsquid_release_status_message)
-
-if(NOT libsquid_release_status_code EQUAL 0)
+if(NOT libsquid_sources)
     message(FATAL_ERROR
-        "Failed to resolve the latest libsquid release: "
-        "${libsquid_release_status_message}"
+        "The selected libsquid source does not provide the wire-v2 portable backend"
     )
 endif()
 
-file(READ "${libsquid_release_metadata}" libsquid_release_json)
-string(REGEX MATCH
-    "\"tag_name\"[ \t\r\n]*:[ \t\r\n]*\"([^\"]+)\""
-    libsquid_release_tag_match
-    "${libsquid_release_json}"
+# Stage the matching public libsquid headers with the client SDK. The client
+# header for Spectrum includes squid/snet.h, and consumers should not have to
+# find a second include prefix built from a different revision.
+set(server_stage_squid_include_root ${server_stage_root}/include/squid)
+file(MAKE_DIRECTORY ${server_stage_squid_include_root})
+file(GLOB libsquid_public_headers CONFIGURE_DEPENDS
+    "${libsquid_SOURCE_DIR}/include/squid/*.h"
 )
-set(libsquid_release_tag "${CMAKE_MATCH_1}")
-
-if(libsquid_release_tag STREQUAL "")
-    message(FATAL_ERROR
-        "The latest libsquid release metadata did not contain a tag_name"
+foreach(libsquid_public_header IN LISTS libsquid_public_headers)
+    get_filename_component(libsquid_public_header_name
+        ${libsquid_public_header} NAME
     )
-endif()
-
-message(STATUS "Using latest libsquid release: ${libsquid_release_tag}")
-
-FetchContent_Declare(
-    libsquid
-    GIT_REPOSITORY https://github.com/retro-plastics/libsquid.git
-    GIT_TAG "${libsquid_release_tag}"
-    GIT_SHALLOW TRUE
-)
-
-FetchContent_GetProperties(libsquid)
-
-if(NOT libsquid_POPULATED)
-    FetchContent_Populate(libsquid)
-endif()
-endif()
-
-file(GLOB libsquid_sources CONFIGURE_DEPENDS "${libsquid_SOURCE_DIR}/lib/squid/*.c")
+    configure_file(
+        ${libsquid_public_header}
+        ${server_stage_squid_include_root}/${libsquid_public_header_name}
+        COPYONLY
+    )
+endforeach()
 
 add_library(squid ${libsquid_sources})
 
@@ -91,13 +81,20 @@ target_include_directories(squid
     PUBLIC
         ${libsquid_SOURCE_DIR}/include
     PRIVATE
-        ${libsquid_SOURCE_DIR}/lib
+        ${libsquid_SOURCE_DIR}/lib/squid/portable
+        ${libsquid_SOURCE_DIR}/lib/squid/contract
 )
 
 target_compile_features(squid PUBLIC c_std_11)
 target_compile_options(squid PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(squid PRIVATE SQUID_MAX_SOCKETS=15)
+set_target_properties(
+    squid
+    PROPERTIES
+        ARCHIVE_OUTPUT_DIRECTORY ${server_stage_root}/lib/client/portable
+)
 
+add_subdirectory(client)
 add_subdirectory(echo)
 add_subdirectory(filesystem)
 add_subdirectory(retrovault)

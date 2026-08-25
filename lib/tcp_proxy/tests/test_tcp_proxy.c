@@ -13,6 +13,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#define test_packet_capacity 255U
+
 static void write_u16(uint8_t *output, uint16_t value)
 {
     output[0] = (uint8_t)(value & 0xFFU);
@@ -22,14 +24,14 @@ static void write_u16(uint8_t *output, uint16_t value)
 static int test_capabilities(struct squid_tcp_context *context)
 {
     const uint8_t request[] = { SQUID_TCP_OP_CAPABILITIES };
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     int size = handle_squid_tcp_request(
         context, request, sizeof(request), response, sizeof(response));
 
     return (size == 7) && (response[1] == SQUID_TCP_STATUS_OK) &&
         (response[2] == SQUID_TCP_PROTOCOL_VERSION) &&
         ((response[3] & SQUID_TCP_FEATURE_DNS) != 0U) &&
-        (response[5] == 250U) && (response[6] == 252U) ? 0 : 1;
+        (response[5] == 251U) && (response[6] == 253U) ? 0 : 1;
 }
 
 static int test_denied(void)
@@ -79,8 +81,8 @@ static int test_connection(void)
     struct sockaddr_in address;
     socklen_t address_size = sizeof(address);
     struct squid_tcp_context context;
-    uint8_t request[254];
-    uint8_t response[254];
+    uint8_t request[test_packet_capacity];
+    uint8_t response[test_packet_capacity];
     int listener = -1;
     int size = 0;
     int failed = 0;

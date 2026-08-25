@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define test_packet_capacity 255U
+
 static const char catalog_json[] =
     "["
     "{"
@@ -150,7 +152,7 @@ static int mock_http_get(
 static int test_capabilities(struct retro_vault_context *context)
 {
     const uint8_t request[] = { RETRO_VAULT_OP_CAPABILITIES };
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     int size = handle_retro_vault_request(
         context, request, sizeof(request), response, sizeof(response));
 
@@ -159,7 +161,7 @@ static int test_capabilities(struct retro_vault_context *context)
         (response[1] != RETRO_VAULT_STATUS_OK) ||
         (response[2] != RETRO_VAULT_PROTOCOL_VERSION) ||
         ((response[3] & RETRO_VAULT_FEATURE_DOWNLOAD) == 0U) ||
-        (response[6] != 243U)) {
+        (response[6] != 244U)) {
         return 1;
     }
     return 0;
@@ -206,7 +208,7 @@ static int test_list(
 )
 {
     const uint8_t request[] = { RETRO_VAULT_OP_LIST, 0U, 0U, 0U };
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     size_t offset = 5U;
     int size = handle_retro_vault_request(
         context, request, sizeof(request), response, sizeof(response));
@@ -226,7 +228,7 @@ static int test_filtered_list(struct retro_vault_context *context)
 {
     static const char platform[] = "idp";
     uint8_t request[4U + sizeof(platform) - 1U];
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     size_t offset = 5U;
     int size = 0;
 
@@ -255,7 +257,7 @@ static int test_legacy_platform_list(struct retro_vault_context *context)
 {
     static const char platform[] = "iskra-delta-partner";
     uint8_t request[4U + sizeof(platform) - 1U];
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     size_t offset = 5U;
     int size = 0;
 
@@ -285,7 +287,7 @@ static int test_gdp_model_list(struct retro_vault_context *context)
     static const char platform[] = "idp";
     static const char model[] = "gdp";
     uint8_t request[5U + sizeof(platform) - 1U + sizeof(model) - 1U];
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     size_t offset = 5U;
     int size = 0;
 
@@ -321,7 +323,7 @@ static int test_p_model_list(struct retro_vault_context *context)
     static const char platform[] = "idp";
     static const char model[] = "p";
     uint8_t request[5U + sizeof(platform) - 1U + sizeof(model) - 1U];
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     int size = 0;
 
     request[0] = RETRO_VAULT_OP_LIST;
@@ -347,7 +349,7 @@ static int test_search(struct retro_vault_context *context)
 {
     static const char query[] = "iskra";
     uint8_t request[5U + sizeof(query) - 1U];
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     size_t offset = 5U;
     int size = 0;
 
@@ -377,7 +379,7 @@ static int test_info(struct retro_vault_context *context)
 {
     static const char package_id[] = "manic-miner";
     uint8_t request[4U + sizeof(package_id) - 1U];
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     uint16_t cursor = 0U;
     int saw_year = 0;
     int saw_download = 0;
@@ -553,8 +555,8 @@ static int run_live_test(void)
     const struct retro_vault_package *selected_package = NULL;
     const struct retro_vault_download *selected_download = NULL;
     uint32_t smallest_download = RETRO_VAULT_SIZE_UNKNOWN;
-    uint8_t operation[254];
-    uint8_t response[254];
+    uint8_t operation[test_packet_capacity];
+    uint8_t response[test_packet_capacity];
     size_t package_index = 0U;
     size_t download_index = 0U;
     size_t package_id_size = 0U;

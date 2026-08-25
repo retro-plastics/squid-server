@@ -10,10 +10,9 @@
  *
  * NOTES:
  *  _XOPEN_SOURCE 600 is required for usleep().
- *  The dispatch loop exits when snet_link_is_up() returns false,
- *  which happens on peer-restart or after max retransmit
- *  attempts.  WAITING state (data in-flight) keeps link_up set,
- *  so the loop continues through normal data transfer.
+ *  A lost link returns the dispatch loop to handshake polling; a termination
+ *  signal ends it. WAITING state (data in flight) keeps link_up set, so the
+ *  loop continues through normal data transfer.
  *
  * GPL2 License (see: LICENSE)
  * copyright (c) 2026 tomaz stih
@@ -246,10 +245,8 @@ static void open_plugin_sockets(struct server_runtime *runtime)
         }
 
         runtime->squid_fds[port] = squid_open(
-            runtime->squid_tx_rings[port],
-            (uint8_t)server_squid_ring_size,
-            runtime->squid_rx_rings[port],
-            (uint8_t)server_squid_ring_size
+            (uint16_t)server_squid_queue_capacity,
+            (uint16_t)server_squid_queue_capacity
         );
         if (runtime->squid_fds[port] < 0) {
             char msg[128];
@@ -291,7 +288,7 @@ static void close_plugin_sockets(struct server_runtime *runtime)
  * libsquid channels are byte streams.  The server's plugin API is packet
  * based, so each stream message is prefixed by its one-byte payload length.
  * Read only the bytes needed for one packet and leave a following packet in
- * the socket ring for the next dispatch pass.
+ * the socket queue for the next dispatch pass.
  */
 static int receive_plugin_packet(
     struct server_runtime *runtime,
@@ -309,9 +306,9 @@ static int receive_plugin_packet(
         if (received <= 0) {
             return received;
         }
-        if ((wire_size == 0U) || (wire_size > server_packet_max)) {
+        if (wire_size == 0U) {
             write_server_log(server_log_level_warning,
-                "invalid zero-length or oversized squid packet");
+                "invalid zero-length squid packet");
             return -1;
         }
         *expected = wire_size;
@@ -347,7 +344,7 @@ static void dispatch_received_packets(struct server_runtime *runtime)
 
         /*
          * libsquid applies all-or-nothing TX backpressure.  Keep a
-         * plugin response until the socket ring has room rather than losing
+         * plugin response until the socket queue has room rather than losing
          * it, and stop draining this port's RX ring while a reply is pending.
          */
         if (runtime->pending_response_sizes[port] > 0U) {

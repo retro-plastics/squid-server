@@ -13,7 +13,7 @@ The constants are also available in
 ## 1. Wire conventions
 
 - Each squid payload contains exactly one request or one response.
-- The current maximum squid payload is 254 bytes.
+- The current maximum squid payload is 255 bytes.
 - All multi-byte integers are unsigned and little-endian.
 - Every text value is a one-byte length followed by that many UTF-8 bytes.
 - Text has no trailing zero and is never escaped or padded.
@@ -80,12 +80,12 @@ Request size: 1 byte.
 | 3 | 1 | feature bits | see below |
 | 4 | 1 | list/info page-header size | `5` |
 | 5 | 1 | download response-header size | `11` |
-| 6 | 1 | maximum download data bytes | normally `243` |
+| 6 | 1 | maximum download data bytes | normally `244` |
 
 Feature bits are `0x01` LIST, `0x02` SEARCH, `0x04` INFO, and `0x08`
 DOWNLOAD. Unknown feature bits must be ignored.
 
-With a 254-byte squid payload, the complete exchange in hexadecimal is:
+With a 255-byte squid payload, the complete exchange in hexadecimal is:
 
 ```text
 request:  00
@@ -332,8 +332,8 @@ For `manic-miner`, choice `complete`, offset zero, and at most 20 bytes:
 | 10 | 1 | data length `N` |
 | 11 | `N` | raw package bytes |
 
-Response size: `11 + N` bytes. With the current 254-byte payload, `N` is at
-most 243 (`0xf3`). The final chunk may be shorter. Requesting an offset equal
+Response size: `11 + N` bytes. With the current 255-byte payload, `N` is at
+most 244 (`0xf4`). The final chunk may be shorter. Requesting an offset equal
 to `total_size` succeeds with `N = 0`; an offset larger than `total_size` is a
 bad request.
 

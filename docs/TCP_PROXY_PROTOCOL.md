@@ -71,15 +71,15 @@ Successful response:
 | 2 | 1 | protocol version | `1` |
 | 3 | 1 | feature bits | `0x07` |
 | 4 | 1 | maximum host bytes | `240` |
-| 5 | 1 | maximum READ data bytes | normally `250` |
-| 6 | 1 | maximum WRITE data bytes | normally `252` |
+| 5 | 1 | maximum READ data bytes | normally `251` |
+| 6 | 1 | maximum WRITE data bytes | normally `253` |
 
 Feature bits are IPv4 `0x01`, IPv6 `0x02`, and hostname lookup `0x04`.
 
-With a 254-byte squid payload:
+With a 255-byte squid payload:
 
 ```text
-80 00 01 07 f0 fa fc
+80 00 01 07 f0 fb fd
 ```
 
 ## 5. CONNECT
@@ -125,7 +125,7 @@ Request size is `2 + N`:
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 1 | opcode `0x02` |
-| 1 | 1 | data length `N`, 1 through 252 |
+| 1 | 1 | data length `N`, 1 through 253 |
 | 2 | `N` | raw stream bytes |
 
 Successful response size is three bytes:
@@ -181,7 +181,7 @@ Successful response:
 | 4 | `N` | raw stream bytes |
 
 Flag bit `0x01` means EOF: the remote peer closed cleanly and the plugin has
-closed its socket. Reserved flag bits must be ignored. `N` is at most 250.
+closed its socket. Reserved flag bits must be ignored. `N` is at most 251.
 
 There are three normal zero-length cases:
 
@@ -232,4 +232,3 @@ The allowlist is checked against the host string sent by the client before DNS
 resolution. It is not an IP firewall: an allowed hostname can resolve to any
 address. Use Linux firewall rules as well when destination-level isolation is
 required.
-

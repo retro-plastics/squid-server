@@ -3,7 +3,7 @@
  *
  * POSIX serial port (TTY) transport for squid-server.
  * Opens a serial device, configures line parameters and raw mode,
- * then provides the three libsquid platform hooks wired to the open fd.
+ * then provides the libsquid I/O, timing, and allocator hooks.
  *
  * NOTES:
  *  Only one active serial transport per process is supported because

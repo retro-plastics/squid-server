@@ -2,7 +2,7 @@ add_executable(sys_sample
     ${CMAKE_CURRENT_SOURCE_DIR}/sys_sample.c
 )
 
-target_link_libraries(sys_sample PRIVATE squid_transport_local)
+target_link_libraries(sys_sample PRIVATE squid_transport_local squid_client)
 
 target_include_directories(sys_sample
     PRIVATE

@@ -43,7 +43,7 @@ main()
               │     ├── serial: serial_transport_open/activate
               │     └── local:  local_transport_listen/accept/activate
               ├── snet_init()                libsquid protocol engine
-              ├── open_plugin_sockets()      caller-owned rings + squid_open/bind × N
+              ├── open_plugin_sockets()      allocated queues + squid_open/bind × N
               ├── run_dispatch_loop()
               │     ├── [wait for squid link handshake]
               │     └── snet_burst() + dispatch_received_packets() × N
@@ -53,15 +53,33 @@ main()
               └── close_server_log()
 ```
 
+Client programs use the public `include/squid_client/*.h` API rather than
+reproducing binary plugin layouts. `client.h` includes the complete API, while
+`echo.h`, `system.h`, `time.h`, `filesystem.h`, `retrovault.h`, and
+`tcp_proxy.h` can each be included independently. `lib/client/portable/client.c`
+implements the portable synchronous transaction. `lib/client/z80/client.s`
+implements the sdcccall(1) transaction backend and
+`lib/client/z80/internal.s` implements its byte-order, copy, string, and common
+response helpers. Each typed Z80 protocol is implemented explicitly in
+`lib/client/z80/{echo,system,time,filesystem,retrovault,tcp_proxy}.s`; no plugin
+protocol C is compiled into the Z80 archive. Each protocol remains a separate
+archive member so an 8-bit linker only includes plugin groups actually used.
+
 All modules are compiled into a single static library `squid_server_core` and linked into the `squid-server` executable. Plugins live in separate shared libraries loaded at runtime via `dlopen`.
 
-There is intentionally no threading. The dispatch loop calls `snet_burst()` and `usleep(5000)` (5 ms) per iteration, well within one 20 ms libsquid tick period. A 10-tick keepalive detects a silent peer, and the loop exits when `snet_link_is_up()` returns false (peer restart, liveness timeout, or max retransmit exceeded) or a termination signal arrives.
+There is intentionally no threading. The dispatch loop calls `snet_burst()` and
+`usleep(5000)` (5 ms) per iteration, well within one 20 ms libsquid tick period.
+Keepalive is disabled while plugins may block on I/O. When the link drops, the
+loop waits for a new handshake; a termination signal ends the server.
 
-libsquid owns no socket memory in the current release. `server_runtime` supplies
-255-byte TX and RX rings for every application port, giving each direction 254
-usable bytes. Plugin responses use a separate per-port pending buffer: when
-`squid_send()` reports backpressure, dispatch pauses that port's receive side
-and retries the response on a later iteration.
+Wire-v2 libsquid allocates each socket's TX and RX queues through the platform
+table's `mem_alloc`/`mem_free` hooks. The server requests 256 usable bytes per
+direction, enough for one length-prefixed 255-byte plugin packet. Plugin
+responses use a separate per-port pending buffer: when `squid_send()` reports
+backpressure, dispatch pauses that port's receive side and retries the response
+on a later iteration. Libsquid segments queued packets into wire DATA frames and
+coalesces received frame payloads; the server's length byte exists only to retain
+plugin packet boundaries on the resulting byte stream.
 
 ---
 
@@ -253,6 +271,12 @@ POSIX TTY transport for hardware deployment over RS-232, USB-serial adapters, or
 | `serial_transport_open(transport, device, baud)` | Open the device with `O_RDWR | O_NOCTTY | O_NONBLOCK`, save original `termios`, configure raw 8N1. |
 | `serial_transport_activate(transport)` | Set the module-level `transport_fd` to `fd`. Call before `snet_init()`. |
 | `serial_transport_close(transport)` | Restore original `termios` settings and close the fd. |
+
+The client-side Spectrum counterpart lives in
+`lib/client/z80/spectrum_if1.s`. It bit-bangs Interface 1 at 115200-8-N-2,
+buffers one complete 20-byte libsquid wire frame during CTS overrun, and is
+included only in the Spectrum client archive. The server profile is
+`opt/squid/etc/squid_server_spectrum.conf`.
 
 All line parameters are passed via `serial_transport_config`. Terminal configuration applied by `configure_port()`:
 
@@ -467,7 +491,9 @@ The registry holds `const struct server_plugin *` pointers. The plugin structs a
 - Minimum CMake 3.16, C11 with `CMAKE_C_EXTENSIONS OFF` (no GNU extensions)
 - Staging root: `${CMAKE_SOURCE_DIR}/bin/opt/squid/`
 - Creates the staging directory tree with `file(MAKE_DIRECTORY ...)`
-- Copies `opt/squid/etc/squid_server.conf`, `squid_server_local.conf`, and `squid_server_serial.conf` into the staging `etc/` directory — `opt/squid/etc/` is the canonical source for all configuration templates
+- Copies the default, local, serial, and Spectrum Interface 1 configurations
+  from `opt/squid/etc/` into the staging `etc/` directory; that source
+  directory is canonical for every configuration template
 - Copies all public headers from `include/squid_server/` into the staging `include/squid_server/` directory
 - Adds subdirectories: `lib`, `src`, `tests`, `samples`
 

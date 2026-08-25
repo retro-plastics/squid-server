@@ -41,7 +41,7 @@
  *
  * Call local_transport_activate() once the client_fd is valid and before
  * calling snet_init(), so that the libsquid platform hooks read from and
- * write to the correct file descriptor.
+ * write to the correct file descriptor. Socket queues use malloc/free.
  */
 struct server_local_transport {
     struct server_transport base;                       /* must be first */

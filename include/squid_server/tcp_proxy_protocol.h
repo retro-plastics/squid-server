@@ -59,7 +59,7 @@
 /* READ response flag: the peer closed and the local socket is now closed. */
 #define SQUID_TCP_READ_EOF 0x01U
 
-/* Wire limits for a current 254-byte squid payload. */
+/* Wire limits for a current 255-byte squid payload. */
 #define SQUID_TCP_HOST_MAX 240U
 #define SQUID_TCP_READ_HEADER_SIZE 4U
 #define SQUID_TCP_READ_WAIT_MAX_MS 10000U
@@ -73,8 +73,8 @@
  * CAPABILITIES response (7 bytes):
  *   [opcode|0x80][status][version:u8][features:u8]
  *   [maximum_host:u8][maximum_read_data:u8][maximum_write_data:u8]
- *   With a 254-byte response buffer, version 1 returns:
- *     80 00 01 07 f0 fa fc
+ *   With a 255-byte response buffer, version 1 returns:
+ *     80 00 01 07 f0 fb fd
  *
  * CONNECT request:
  *   [opcode][port:u16][host_len:u8][host]
@@ -91,7 +91,7 @@
  *
  * WRITE request:
  *   [opcode][data_len:u8][data]
- *   data_len must be 1-252 in a current packet.
+ *   data_len must be 1-253 in a current packet.
  *
  * WRITE response (3 bytes):
  *   [opcode|0x80][status][bytes_written:u8]
@@ -103,7 +103,7 @@
  *   [opcode][maximum_wait_ms:u16][maximum_bytes:u8]
  *   maximum_wait_ms must not exceed SQUID_TCP_READ_WAIT_MAX_MS. Zero performs
  *   a nonblocking poll. maximum_bytes == 0 requests the largest chunk that
- *   fits, currently 250 bytes.
+ *   fits, currently 251 bytes.
  *
  * READ response:
  *   [opcode|0x80][status][flags:u8][data_len:u8][data]

@@ -15,7 +15,7 @@
  * Wire conventions
  * ----------------
  * One squid packet carries one complete request or response. The current
- * payload limit is 254 bytes. All u16 and u32 fields described below are
+ * payload limit is 255 bytes. All u16 and u32 fields described below are
  * unsigned little-endian values. Paths and names are counted byte strings:
  * they have an explicit u8 length and no trailing NUL.
  *
@@ -133,7 +133,7 @@
  * READ response:
  *   [opcode|0x80][status][offset:u32][total_size:u32]
  *   [data_len:u8][data]
- *   The fixed header is 11 bytes, leaving at most 243 data bytes in a current
+ *   The fixed header is 11 bytes, leaving at most 244 data bytes in a current
  *   squid packet. Continue at offset + data_len. Reading exactly at EOF is OK
  *   with data_len zero; an offset beyond EOF is BAD_REQUEST.
  *
@@ -141,7 +141,7 @@
  *   [opcode][offset:u32][flags:u8][path_len:u8][path]
  *   [data_len:u8][data]
  *   Request size is 8 + path_len + data_len, so current packets require
- *   data_len <= 246 - path_len. data_len may be zero to create or truncate.
+ *   data_len <= 247 - path_len. data_len may be zero to create or truncate.
  *
  * WRITE response (7 bytes):
  *   [opcode|0x80][status][offset:u32][bytes_written:u8]

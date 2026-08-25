@@ -4,7 +4,7 @@ Version 1, implemented by `libfilesystem.so` on squid channel 4.
 
 This protocol gives a small client POSIX-like file operations without open
 handles or textual commands. Every operation names a path relative to one
-Linux directory. Requests and responses fit in one 254-byte squid payload.
+Linux directory. Requests and responses fit in one 255-byte squid payload.
 Multi-byte integers are unsigned little-endian unless stated otherwise.
 
 The constants are mirrored in
@@ -80,7 +80,7 @@ Successful response:
 | 5 | 1 | maximum path bytes | `240` |
 | 6 | 1 | LIST page-header bytes | `5` |
 | 7 | 1 | READ response-header bytes | `11` |
-| 8 | 1 | maximum READ data bytes | normally `243` |
+| 8 | 1 | maximum READ data bytes | normally `244` |
 
 Feature bits are STAT `0x0001`, LIST `0x0002`, READ `0x0004`, WRITE
 `0x0008`, MKDIR `0x0010`, DELETE `0x0020`, and RENAME `0x0040`. A read-only
@@ -185,7 +185,7 @@ Successful response:
 | 10 | 1 | data length `N` |
 | 11 | `N` | raw file bytes |
 
-`N` is at most 243 with a 254-byte packet. Continue at `offset + N` until it
+`N` is at most 244 with a 255-byte packet. Continue at `offset + N` until it
 equals total size. Reading exactly at EOF succeeds with `N = 0`; reading past
 EOF is a bad request. Files larger than `0xffffffff` bytes return TOO_LARGE.
 
@@ -207,7 +207,7 @@ Flags are CREATE `0x01` and TRUNCATE `0x02`. They may be combined. Without
 CREATE, the file must already exist. TRUNCATE is applied when the request opens
 the file, so normally use it only on the first chunk at offset zero. `N` may be
 zero, allowing creation or truncation without data. Since a request is at most
-254 bytes, `N <= 246 - P`.
+255 bytes, `N <= 247 - P`.
 
 Successful response size is 7 bytes:
 
@@ -271,4 +271,3 @@ SQUID_FS_READ_ONLY=1
 Filesystem access has the Unix identity and permissions of squid-server. Do
 not export sensitive directories. The root restriction limits paths but does
 not replace normal Unix ownership, permissions, backups, or access control.
-

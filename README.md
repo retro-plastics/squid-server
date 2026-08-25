@@ -26,6 +26,7 @@ The server supports two startup modes:
 - **Dual logging** — stdout in console mode, syslog (`LOG_DAEMON`) in daemon mode
 - **Clean shutdown** — `SIGTERM` and `SIGINT` trigger graceful plugin teardown
 - **Staged build tree** — the build produces a deployment-ready layout under `bin/opt/squid/` for local development
+- **Tiny client libraries** — one allocation-free typed API for portable C and Z80, with no client-side wire-block handling
 - **Echo plugin** — a minimal reference plugin that reflects incoming packet payload back to the client
 - **Retro Vault plugin** — compact binary list, search, info, and chunked-download operations for 8-bit package managers
 - **Rooted filesystem plugin** — path-based stat, list, read, write, mkdir, delete, and rename operations
@@ -41,8 +42,8 @@ The server supports two startup modes:
 - GCC or Clang with C11 support
 - `libdl` (part of glibc, present on all standard Linux systems)
 - libcurl development headers and library
-- Internet access during configure (CMake resolves and fetches the latest
-  published `libsquid` release)
+- Internet access during configure when a sibling `../libsquid` checkout is
+  unavailable (CMake fetches the pinned wire-v2 `libsquid` revision)
 
 ---
 
@@ -56,8 +57,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
 
-Each configure resolves GitHub's latest non-prerelease `libsquid` release and
-builds that tagged source, so the server never follows unreleased branch commits.
+By default CMake uses a sibling `../libsquid` checkout when present. Otherwise
+it fetches the wire-v2 revision named by `LIBSQUID_GIT_TAG`; override
+`LIBSQUID_SOURCE_DIR` or `LIBSQUID_GIT_TAG` when testing another revision.
 
 After a successful build the staged tree is ready at `bin/opt/squid/`:
 
@@ -68,13 +70,26 @@ bin/opt/squid/
 ├── etc/
 │   ├── squid_server.conf         # default configuration
 │   ├── squid_server_local.conf   # local Unix-socket transport (development)
-│   └── squid_server_serial.conf  # serial port transport template
+│   ├── squid_server_serial.conf  # serial port transport template
+│   └── squid_server_spectrum.conf # 115200-8-N-2 Interface 1 profile
 ├── include/squid_server/
 │   ├── filesystem_protocol.h     # rooted filesystem wire constants
 │   ├── plugin_api.h              # public plugin API header
 │   ├── retrovault_protocol.h     # Retro Vault wire constants
 │   ├── tcp_proxy_protocol.h      # raw TCP proxy wire constants
 │   └── time_protocol.h           # PC time/date wire constants
+├── include/squid_client/
+│   ├── client.h                  # umbrella for all typed plugin clients
+│   ├── base.h                    # small shared synchronous client core
+│   ├── echo.h, system.h, time.h  # individual plugin APIs
+│   ├── filesystem.h              # rooted filesystem client API
+│   ├── retrovault.h              # Retro Vault client API
+│   ├── tcp_proxy.h               # raw TCP proxy client API
+│   └── spectrum_if1.h            # optional Interface 1 setup
+├── include/squid/                # pinned libsquid v2 public API
+├── lib/client/
+│   ├── portable/                 # libsquid_client.a + libsquid.a
+│   └── z80/                      # optional Partner/Spectrum SDKs
 └── lib/plugins/
     ├── libecho.so                 # echo reference plugin
     ├── libfilesystem.so           # rooted filesystem service
@@ -83,6 +98,39 @@ bin/opt/squid/
     ├── libtcp_proxy.so            # raw TCP proxy
     └── libtime.so                 # PC time and date
 ```
+
+### Minimal portable and Z80 clients
+
+Clients no longer need to build or parse plugin packets. The allocation-free
+`squid_client` API provides typed calls for echo, system identification, time,
+filesystem, Retro Vault, and TCP proxy operations. Portable C and Z80 expose
+the same public headers and reuse one caller-owned workspace. Include
+`squid_client/client.h` for all plugins or the individual plugin header to make
+a small Z80 program's dependency explicit.
+
+Libsquid v2 already carries a complete `squid_send()` block across as many
+16-byte DATA frames as needed and lets `squid_recv()` cross frame boundaries.
+The client library therefore never fragments wire blocks itself. It only hides
+squid-server's one-byte packet envelope, which remains necessary on top of
+libsquid's byte-stream receive semantics.
+
+See [lib/client/README.md](lib/client/README.md) for a minimal example, the
+typed-call list, return conventions, Z80 build commands, and link order.
+
+Build both optional xcc Z80 variants with:
+
+```sh
+cmake --build build --target squid-client-z80
+```
+
+The Spectrum archive additionally contains a 115,200-baud software serial
+platform for a 48K Spectrum with Interface 1. It uses RTS/CTS and 8N2. The
+cycle-counted receiver and its 20-byte overrun buffer are adapted from Tomaž
+Štih's *The YX Kernel for ZX Spectrum* thesis and the corresponding
+[YX send](https://github.com/retro-vault/yx/blob/master/os/ram/ssend115k.s) and
+[receive](https://github.com/retro-vault/yx/blob/master/os/ram/srecv115k.s) sources.
+Libsquid adds CRC checking and retransmission around that physical link. See
+the client-library guide for its four-argument setup call.
 
 ---
 
@@ -100,7 +148,7 @@ SQUID_SERVER_STAGE_ROOT=./bin \
 Console mode writes log lines to standard output:
 
 ```
-[info] squid-server starting in console mode with 16 plugin slots and 6 loaded plugins
+[info] squid-server starting in console mode with 16 plugin slots and 7 loaded plugins
 [info] waiting for client on /tmp/squid_server.sock
 [info] client connected
 [info] squid link established
@@ -115,6 +163,15 @@ Console mode writes log lines to standard output:
 ```
 
 Edit `squid_server_serial.conf` to set the correct device and baud rate before running.
+
+For a 48K Spectrum with Interface 1, edit the device in the supplied 115,200
+8N2 RTS/CTS profile and run:
+
+```sh
+./bin/opt/squid/bin/squid-server \
+  --console \
+  --config ./bin/opt/squid/etc/squid_server_spectrum.conf
+```
 
 ### Daemon mode
 
@@ -187,6 +244,7 @@ The transport is chosen automatically based on whether `serial_device` is presen
 
 system_plugin /opt/squid/lib/plugins/libsquidsys.so
 plugin 1 /opt/squid/lib/plugins/libecho.so
+plugin 2 /opt/squid/lib/plugins/libsquidsys.so
 plugin 3 /opt/squid/lib/plugins/libretrovault.so
 plugin 4 /opt/squid/lib/plugins/libfilesystem.so
 plugin 5 /opt/squid/lib/plugins/libtime.so
@@ -392,11 +450,11 @@ plugin 2 /opt/squid/lib/plugins/libmyplugin.so
 | `server_plugin_stop_fn` | Called once before the plugin is unloaded |
 | `server_plugin_handle_packet_fn` | Called for every incoming packet on the registered port |
 
-The current libsquid release uses 255-byte caller-owned socket rings. One byte
-is reserved by the ring, so requests and responses are limited to 254 bytes;
-plugins should always respect `response->packet_capacity`. If libsquid applies
-TX backpressure, the server retains the response and retries it on later loop
-iterations.
+The wire-v2 libsquid API allocates socket queues through the server's platform
+hooks. Squid-server gives each direction 256 usable bytes, enough for one
+length-prefixed 255-byte plugin packet. Plugins should always respect
+`response->packet_capacity`. If libsquid applies TX backpressure, the server
+retains the response and retries it on later loop iterations.
 
 ### Port constants
 

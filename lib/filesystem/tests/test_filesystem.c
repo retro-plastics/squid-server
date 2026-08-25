@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#define test_packet_capacity 255U
+
 static uint16_t read_u16(const uint8_t *input)
 {
     return (uint16_t)((uint16_t)input[0] | ((uint16_t)input[1] << 8U));
@@ -36,14 +38,14 @@ static size_t make_path_request(uint8_t opcode, const char *path, uint8_t *reque
 static int test_capabilities(struct squid_fs_context *context)
 {
     const uint8_t request[] = { SQUID_FS_OP_CAPABILITIES };
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     int size = handle_squid_fs_request(
         context, request, sizeof(request), response, sizeof(response));
 
     return (size == 9) && (response[1] == SQUID_FS_STATUS_OK) &&
         (response[2] == SQUID_FS_PROTOCOL_VERSION) &&
         ((read_u16(response + 3U) & SQUID_FS_FEATURE_WRITE) != 0U) &&
-        (response[8] == 243U) ? 0 : 1;
+        (response[8] == 244U) ? 0 : 1;
 }
 
 static int test_stat_root(struct squid_fs_context *context)
@@ -60,7 +62,7 @@ static int test_stat_root(struct squid_fs_context *context)
 static int test_list(struct squid_fs_context *context)
 {
     const uint8_t request[] = { SQUID_FS_OP_LIST, 0U, 0U, 0U };
-    uint8_t response[254];
+    uint8_t response[test_packet_capacity];
     size_t offset = 5U;
     uint8_t index = 0U;
     int saw_file = 0;
@@ -131,8 +133,8 @@ static int test_mutation(struct squid_fs_context *context)
     static const char path[] = "new.bin";
     static const uint8_t data[] = { 1U, 2U, 3U };
     uint8_t write_request[8U + sizeof(path) - 1U + sizeof(data)];
-    uint8_t request[254];
-    uint8_t response[254];
+    uint8_t request[test_packet_capacity];
+    uint8_t response[test_packet_capacity];
     size_t cursor = 7U;
     size_t request_size = 0U;
     int size = 0;

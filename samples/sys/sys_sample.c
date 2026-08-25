@@ -3,7 +3,7 @@
  *
  * Command-line client for the squidsys plugin running inside
  * squid-server.  Connects over the local Unix socket transport,
- * sends a single plain-text command on wire channel 1, and
+ * sends a single plain-text command on wire channel 2, and
  * prints the reply.
  *
  * Usage:
@@ -25,6 +25,8 @@
 
 #include "transport/local/local_transport.h"
 
+#include "squid_client/client.h"
+
 #include <squid/snet.h>
 #include <squid/socket.h>
 
@@ -35,14 +37,19 @@
 /*
  * Wire channel used to reach the squidsys plugin.
  * Must match the port number assigned to libsquidsys.so in
- * squid_server_local.conf (plugin 1 ... → wire channel 1).
+ * squid_server_local.conf (plugin 2 ... → wire channel 2).
  */
-#define SYS_CHANNEL 1
-
-#define SQUID_RING_SIZE 255U
-#define PACKET_MAX (SQUID_RING_SIZE - 1U)
+#define SYS_CHANNEL 2
 
 static const squid_timing_t timing = { 6U, 0U, 0U, 3U };
+
+static int pump_squid(void *context)
+{
+    (void)context;
+    snet_burst();
+    usleep(5000);
+    return 0;
+}
 
 static void print_usage(const char *program)
 {
@@ -55,13 +62,12 @@ static void print_usage(const char *program)
 int main(int argc, char **argv)
 {
     struct server_local_transport transport;
+    struct squid_client client;
     int squid_fd;
     const char *command;
     size_t command_len;
-    uint8_t rx_buf[PACKET_MAX];
-    uint8_t tx_ring[SQUID_RING_SIZE];
-    uint8_t rx_ring[SQUID_RING_SIZE];
-    int received = 0;
+    uint8_t workspace[SQUID_CLIENT_WORKSPACE_SIZE];
+    struct squid_client_bytes reply;
 
     if (argc != 2) {
         print_usage(argv[0]);
@@ -76,9 +82,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (command_len > PACKET_MAX) {
+    if (command_len > SQUID_CLIENT_PACKET_MAX) {
         fprintf(stderr, "error: command is too long (maximum %u bytes)\n",
-                (unsigned int)PACKET_MAX);
+                (unsigned int)SQUID_CLIENT_PACKET_MAX);
         return 1;
     }
 
@@ -96,10 +102,8 @@ int main(int argc, char **argv)
     snet_init(&transport.base.platform, &timing);
 
     squid_fd = squid_open(
-        tx_ring,
-        (uint8_t)sizeof(tx_ring),
-        rx_ring,
-        (uint8_t)sizeof(rx_ring)
+        SQUID_CLIENT_WORKSPACE_SIZE,
+        SQUID_CLIENT_WORKSPACE_SIZE
     );
     if (squid_fd < 0) {
         fprintf(stderr, "error: squid_open failed\n");
@@ -108,6 +112,14 @@ int main(int argc, char **argv)
     }
 
     squid_connect(squid_fd, SYS_CHANNEL);
+    squid_client_init(
+        &client,
+        squid_fd,
+        workspace,
+        SQUID_CLIENT_PACKET_MAX,
+        pump_squid,
+        NULL
+    );
 
     /* Wait for the protocol handshake to complete. */
     while (!snet_link_is_up()) {
@@ -115,28 +127,16 @@ int main(int argc, char **argv)
         usleep(5000);
     }
 
-    if (squid_send(
-        squid_fd,
-        (const uint8_t *)command,
-        (uint16_t)command_len
-    ) < 0) {
+    if ((strcmp(command, "id") != 0) ||
+        (squid_client_system_id(&client, &reply) != 0)) {
         fprintf(stderr, "error: send failed — server may have disconnected\n");
         squid_close(squid_fd);
         local_transport_close(&transport);
         return 1;
     }
 
-    /* Poll until a response arrives or the link drops. */
-    while ((received <= 0) && snet_link_is_up()) {
-        snet_burst();
-        received = squid_recv(squid_fd, rx_buf, (uint16_t)sizeof(rx_buf));
-        if (received <= 0) {
-            usleep(5000);
-        }
-    }
-
-    if (received > 0) {
-        fprintf(stdout, "%.*s\n", received, (char *)rx_buf);
+    if (reply.size > 0U) {
+        fprintf(stdout, "%.*s\n", (int)reply.size, (const char *)reply.data);
         fflush(stdout);
     } else {
         fprintf(stderr, "error: link lost or no response from server\n");
