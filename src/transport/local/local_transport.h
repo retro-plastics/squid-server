@@ -82,6 +82,12 @@ int local_transport_connect(
  */
 void local_transport_activate(struct server_local_transport *transport);
 
+/* Wait until the socket has input or timeout expires. */
+int local_transport_wait(
+    struct server_local_transport *transport,
+    int timeout_ms
+);
+
 /*
  * Close all open file descriptors.  On the server side, also unlinks the
  * socket file so the path can be reused on the next run.

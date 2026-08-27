@@ -219,13 +219,16 @@ system_plugin <path>
 # attach a shared library to a port in the range 1-15
 plugin <port> <path>
 
+# maximum negotiated Squid DATA payload (default: 112)
+squid_payload <16..112>
+
 # serial transport — omit serial_device to use the local Unix-socket transport instead
 serial_device <device>          # e.g. /dev/ttyS0 or /dev/ttyUSB0
 serial_baud   <rate>            # 1200 2400 4800 9600 19200 38400 57600 115200  (default: 9600)
 serial_databits <7|8>           # (default: 8)
 serial_parity   <none|even|odd> # (default: none)
 serial_stopbits <1|2>           # (default: 1)
-serial_flow     <none|rtscts|xonxoff> # (default: none)
+serial_flow     <none|rtscts|xonxoff> # (default: rtscts)
 ```
 
 ### Transport selection
@@ -243,6 +246,7 @@ The transport is chosen automatically based on whether `serial_device` is presen
 # squid_server_local.conf
 
 system_plugin /opt/squid/lib/plugins/libsquidsys.so
+squid_payload 112
 plugin 1 /opt/squid/lib/plugins/libecho.so
 plugin 2 /opt/squid/lib/plugins/libsquidsys.so
 plugin 3 /opt/squid/lib/plugins/libretrovault.so
@@ -253,21 +257,22 @@ plugin 6 /opt/squid/lib/plugins/libtcp_proxy.so
 
 ### Serial transport examples
 
-**8N1, no flow control (most common):**
+**8N1 with RTS/CTS (recommended):**
 ```
 serial_device /dev/ttyUSB0
 serial_baud   9600
+serial_flow   rtscts
+squid_payload 112
 
 system_plugin /opt/squid/lib/plugins/libsquidsys.so
 plugin 1 /opt/squid/lib/plugins/libecho.so
 ```
 
-**8N2 with RTS/CTS (retro hardware handshake):**
+**8N1 without wired handshake lines:**
 ```
-serial_device   /dev/ttyS0
-serial_baud     9600
-serial_stopbits 2
-serial_flow     rtscts
+serial_device /dev/ttyS0
+serial_baud   9600
+serial_flow   none
 
 system_plugin /opt/squid/lib/plugins/libsquidsys.so
 plugin 1 /opt/squid/lib/plugins/libecho.so
@@ -289,6 +294,8 @@ plugin 1 /opt/squid/lib/plugins/libecho.so
 
 - `system_plugin` may appear at most once; defaults to `libsquidsys.so` if omitted
 - `plugin` lines set user plugins for ports 1–15
+- `squid_payload` sets this endpoint's offer from 16 through 112 bytes; the
+  link uses the lower peer offer, and an older wire-v2 peer falls back to 16
 - Each serial directive may appear at most once
 - `serial_databits` must be `7` or `8`; `serial_parity` must be `none`, `even`, or `odd`; `serial_stopbits` must be `1` or `2`; `serial_flow` must be `none`, `rtscts`, or `xonxoff`
 - Duplicate port assignments are rejected at startup
@@ -450,7 +457,7 @@ plugin 2 /opt/squid/lib/plugins/libmyplugin.so
 | `server_plugin_stop_fn` | Called once before the plugin is unloaded |
 | `server_plugin_handle_packet_fn` | Called for every incoming packet on the registered port |
 
-The wire-v2 libsquid API allocates socket queues through the server's platform
+The negotiated wire-v2 libsquid API allocates socket queues through the server's platform
 hooks. Squid-server gives each direction 256 usable bytes, enough for one
 length-prefixed 255-byte plugin packet. Plugins should always respect
 `response->packet_capacity`. If libsquid applies TX backpressure, the server

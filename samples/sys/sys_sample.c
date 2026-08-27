@@ -41,7 +41,7 @@
  */
 #define SYS_CHANNEL 2
 
-static const squid_timing_t timing = { 6U, 0U, 0U, 3U };
+static const squid_timing_t timing = { 6U, 0U, 0U, 3U, 0U };
 
 static int pump_squid(void *context)
 {

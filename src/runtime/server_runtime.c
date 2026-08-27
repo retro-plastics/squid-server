@@ -9,8 +9,7 @@
  * queued for the next TX burst.
  *
  * NOTES:
- *  _XOPEN_SOURCE 600 is required for usleep().
- *  A lost link returns the dispatch loop to handshake polling; a termination
+ *  A lost link returns the dispatch loop to handshake waiting; a termination
  *  signal ends it. WAITING state (data in flight) keeps link_up set, so the
  *  loop continues through normal data transfer.
  *
@@ -19,8 +18,6 @@
  *
  * tstih
  */
-
-#define _XOPEN_SOURCE 600
 
 #include "runtime/server_runtime.h"
 
@@ -46,17 +43,17 @@
  * libsquid timing parameters (values in ticks; one tick = 20 ms).
  *   timeout_ticks 200  →    4 s resend timeout (safe for slow clients and
  *                                debug emulation)
- *   ack_delay_ticks  1 →   20 ms for a response to piggyback its ACK;
- *                                avoids back-to-back frames overrunning a
- *                                polling Partner at 9600 baud
+ *   ack_delay_ticks  0 → immediate ACK; transport flow control now provides
+ *                                receiver backpressure
  *   ping_ticks      0  →  disabled while plugins may block on I/O
  *   max_retries     5
  */
-static const squid_timing_t squid_timing = {
+static const squid_timing_t squid_timing_defaults = {
     .timeout_ticks = 200U,
-    .ack_delay_ticks = 1U,
+    .ack_delay_ticks = 0U,
     .ping_ticks = 0U,
-    .max_retries = 5U
+    .max_retries = 5U,
+    .payload_bytes = 0U
 };
 
 static volatile sig_atomic_t keep_running = 1;
@@ -423,13 +420,33 @@ static void dispatch_received_packets(struct server_runtime *runtime)
 
 /* ---- main dispatch loop ---- */
 
+static void wait_for_transport(struct server_runtime *runtime)
+{
+    int result;
+
+    if (runtime->plugin_config.serial_device[0] != '\0') {
+        result = serial_transport_wait(&runtime->serial_transport, 20);
+    } else {
+        result = local_transport_wait(&runtime->transport, 20);
+    }
+
+    if (result < 0) {
+        write_server_log_errno(
+            server_log_level_error,
+            "transport readiness wait failed",
+            errno
+        );
+        keep_running = 0;
+    }
+}
+
 static void run_dispatch_loop(struct server_runtime *runtime)
 {
     while (keep_running) {
         /* Wait for the first client or a replacement client's handshake. */
         while (keep_running && !snet_link_is_up()) {
             snet_burst();
-            usleep(5000);
+            wait_for_transport(runtime);
         }
 
         if (!keep_running) {
@@ -441,7 +458,9 @@ static void run_dispatch_loop(struct server_runtime *runtime)
         while (keep_running && snet_link_is_up()) {
             snet_burst();
             dispatch_received_packets(runtime);
-            usleep(5000);   /* 5 ms — well within one 20 ms tick period */
+            /* Give responses queued by dispatch an immediate transmit turn. */
+            snet_burst();
+            wait_for_transport(runtime);
         }
 
         if (!snet_link_is_up()) {
@@ -487,11 +506,11 @@ int run_server_runtime(struct server_runtime *runtime)
 {
     int daemon_result = 0;
     char startup_message[128];
+    squid_timing_t squid_timing = squid_timing_defaults;
 
     if (runtime == NULL) {
         return 1;
     }
-
     if (runtime->config.run_mode == server_run_mode_daemon) {
         daemon_result = daemonize_process();
         if (daemon_result < 0) {
@@ -525,6 +544,8 @@ int run_server_runtime(struct server_runtime *runtime)
         close_server_log();
         return 1;
     }
+    squid_timing.payload_bytes =
+        (uint8_t)runtime->plugin_config.squid_payload;
 
     snprintf(
         startup_message,

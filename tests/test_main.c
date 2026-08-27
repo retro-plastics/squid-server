@@ -117,6 +117,7 @@ static int test_plugin_config_file(void)
 {
     static const char config_text[] =
         "# comment\n"
+        "squid_payload 64\n"
         "system_plugin ./bin/plugins/libsquidsys.so\n"
         "plugin 1 ./bin/plugins/libecho.so\n";
     char file_path[] = "/tmp/squid_server_test_XXXXXX";
@@ -158,6 +159,16 @@ static int test_plugin_config_file(void)
     }
 
     if (config_file.mapping_count != 1U) {
+        unlink(file_path);
+        return 1;
+    }
+
+    if (config_file.serial_flow != 1) {
+        unlink(file_path);
+        return 1;
+    }
+
+    if (config_file.squid_payload != 64) {
         unlink(file_path);
         return 1;
     }

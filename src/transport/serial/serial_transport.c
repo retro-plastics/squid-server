@@ -10,13 +10,16 @@
  * that retro hardware combinations such as 7E2 + RTS/CTS are
  * fully supported.
  *
- * recv_char returns -1 immediately when no byte is available
- * (O_NONBLOCK), so snet_burst() never blocks.  get_tick returns
+ * send_char queues complete protocol bursts in userspace, recv_char returns
+ * -1 immediately when no byte is available (O_NONBLOCK), and the runtime uses
+ * poll(2) to flush output or wake on input. The kernel TTY driver dynamically
+ * gates transmission and reception with RTS/CTS when CRTSCTS is selected.
+ * get_tick returns
  * a wrapping 8-bit counter in 20 ms units derived from
  * CLOCK_MONOTONIC (same as the local transport).
  *
  * NOTES:
- *  A module-level static int transport_fd holds the active fd
+ *  A module-level transport pointer holds the active endpoint
  *  because the libsquid platform_t hooks have no user-data
  *  pointer.  This restricts the process to one active transport
  *  at a time, which is sufficient for the current server model.
@@ -35,6 +38,8 @@
 #include "transport/serial/serial_transport.h"
 
 #include <fcntl.h>
+#include <errno.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -44,7 +49,12 @@
  * File-scope fd used by the libsquid platform hooks.
  * Set by serial_transport_activate() before snet_init() is called.
  */
-static int transport_fd = -1;
+static struct server_serial_transport *active_transport = NULL;
+
+_Static_assert(
+    serial_transport_tx_capacity >= SQUID_PLATFORM_TX_BURST_MAX,
+    "serial TX queue must accept one complete libsquid burst"
+);
 
 /* ---- baud rate mapping ---- */
 
@@ -67,13 +77,29 @@ static speed_t map_baud_rate(int baud)
 
 static int serial_send_char(uint8_t c)
 {
-    return (write(transport_fd, &c, 1) == 1) ? 0 : -1;
+    size_t tail;
+
+    if ((active_transport == NULL) ||
+        (active_transport->tx_count >= serial_transport_tx_capacity)) {
+        return -1;
+    }
+
+    tail = (active_transport->tx_head + active_transport->tx_count) %
+        serial_transport_tx_capacity;
+    active_transport->tx_queue[tail] = c;
+    ++active_transport->tx_count;
+    return 0;
 }
 
 static int serial_recv_char(void)
 {
     uint8_t c;
-    ssize_t n = read(transport_fd, &c, 1);
+    ssize_t n;
+
+    if (active_transport == NULL) {
+        return -1;
+    }
+    n = read(active_transport->fd, &c, 1);
     return (n == 1) ? (int)(unsigned int)c : -1;
 }
 
@@ -221,7 +247,85 @@ void serial_transport_activate(struct server_serial_transport *transport)
         return;
     }
 
-    transport_fd = transport->fd;
+    active_transport = transport;
+}
+
+static int flush_output(struct server_serial_transport *transport)
+{
+    while (transport->tx_count != 0U) {
+        size_t contiguous = serial_transport_tx_capacity - transport->tx_head;
+        ssize_t written;
+
+        if (contiguous > transport->tx_count) {
+            contiguous = transport->tx_count;
+        }
+        written = write(
+            transport->fd,
+            &transport->tx_queue[transport->tx_head],
+            contiguous
+        );
+        if (written > 0) {
+            transport->tx_head = (transport->tx_head + (size_t)written) %
+                serial_transport_tx_capacity;
+            transport->tx_count -= (size_t)written;
+            continue;
+        }
+        if ((written < 0) && (errno == EINTR)) {
+            continue;
+        }
+        if ((written < 0) && ((errno == EAGAIN) || (errno == EWOULDBLOCK))) {
+            return 0;
+        }
+        return -1;
+    }
+    transport->tx_head = 0U;
+    return 0;
+}
+
+int serial_transport_wait(
+    struct server_serial_transport *transport,
+    int timeout_ms
+)
+{
+    struct pollfd descriptor;
+    int result;
+
+    if ((transport == NULL) || (transport->fd < 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    descriptor.fd = transport->fd;
+    descriptor.events = POLLIN;
+    if (transport->tx_count != 0U) {
+        descriptor.events |= POLLOUT;
+    }
+    descriptor.revents = 0;
+
+    do {
+        result = poll(&descriptor, 1U, timeout_ms);
+    } while ((result < 0) && (errno == EINTR));
+
+    if (result <= 0) {
+        return result;
+    }
+    if ((descriptor.revents & POLLOUT) != 0) {
+        if (flush_output(transport) != 0) {
+            return -1;
+        }
+    }
+    if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    return result;
+}
+
+size_t serial_transport_pending_output(
+    const struct server_serial_transport *transport
+)
+{
+    return transport != NULL ? transport->tx_count : 0U;
 }
 
 void serial_transport_close(struct server_serial_transport *transport)
@@ -236,5 +340,7 @@ void serial_transport_close(struct server_serial_transport *transport)
         transport->fd = -1;
     }
 
-    transport_fd = -1;
+    if (active_transport == transport) {
+        active_transport = NULL;
+    }
 }

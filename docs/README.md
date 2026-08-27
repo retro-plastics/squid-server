@@ -67,10 +67,11 @@ archive member so an 8-bit linker only includes plugin groups actually used.
 
 All modules are compiled into a single static library `squid_server_core` and linked into the `squid-server` executable. Plugins live in separate shared libraries loaded at runtime via `dlopen`.
 
-There is intentionally no threading. The dispatch loop calls `snet_burst()` and
-`usleep(5000)` (5 ms) per iteration, well within one 20 ms libsquid tick period.
-Keepalive is disabled while plugins may block on I/O. When the link drops, the
-loop waits for a new handshake; a termination signal ends the server.
+There is intentionally no threading. The dispatch loop calls `snet_burst()`
+and then waits with `poll(2)` for input or queued serial-output readiness, with
+a 20 ms timeout to advance libsquid timers. Keepalive is disabled while plugins
+may block on I/O. When the link drops, the loop waits for a new handshake; a
+termination signal ends the server.
 
 Wire-v2 libsquid allocates each socket's TX and RX queues through the platform
 table's `mem_alloc`/`mem_free` hooks. The server requests 256 usable bytes per
@@ -112,16 +113,16 @@ Two distinct responsibilities kept in separate files:
 
 **`server_plugin_config.c`** — configuration file
 
-Parsed result is stored in `server_plugin_config_file`, which carries plugin mappings and the full set of serial line parameters (`serial_device`, `serial_baud`, `serial_databits`, `serial_parity`, `serial_stopbits`, `serial_flow`).
+Parsed result is stored in `server_plugin_config_file`, which carries plugin mappings, the negotiated `squid_payload` offer, and the full set of serial line parameters (`serial_device`, `serial_baud`, `serial_databits`, `serial_parity`, `serial_stopbits`, `serial_flow`).
 
 - Line-oriented parser using `fgets` into a 1024-byte buffer
 - Trims leading and trailing whitespace before tokenising
 - Tokenises with `strtok` (acceptable: single-threaded, startup only)
-- Recognises eight directives: `system_plugin`, `plugin`, `serial_device`, `serial_baud`, `serial_databits`, `serial_parity`, `serial_stopbits`, `serial_flow`
+- Recognises nine directives: `system_plugin`, `plugin`, `squid_payload`, `serial_device`, `serial_baud`, `serial_databits`, `serial_parity`, `serial_stopbits`, `serial_flow`
 - Rejects unknown directives, duplicate ports, out-of-range ports, paths exceeding 512 bytes, device paths exceeding 64 bytes, and invalid serial parameter values
 - Returns a descriptive `const char *` error message on the first parse failure
 - Lines beginning with `#` (after trimming) are skipped as comments
-- Serial defaults: `serial_device` empty (local transport), `serial_baud` 9600, `serial_databits` 8, `serial_parity` none, `serial_stopbits` 1, `serial_flow` none
+- Protocol/serial defaults: `squid_payload` 112, `serial_device` empty (local transport), `serial_baud` 9600, `serial_databits` 8, `serial_parity` none, `serial_stopbits` 1, `serial_flow` RTS/CTS
 
 ### `src/transport/` — transport back-ends
 
@@ -254,6 +255,7 @@ Unix domain socket (SOCK_STREAM) transport for same-machine testing.
 | `local_transport_accept(transport)` | Block until a client connects; fills `client_fd`. |
 | `local_transport_connect(transport, path)` | Client-side connect (used by sample programs). |
 | `local_transport_activate(transport)` | Set the module-level `transport_fd` to `client_fd`. Call before `snet_init()`. |
+| `local_transport_wait(transport, timeout)` | Wait with `poll(2)` for socket input or the protocol-timer deadline. |
 | `local_transport_close(transport)` | Close all fds; unlink the socket file on the server side. |
 
 `recv_char` uses `MSG_DONTWAIT` so `snet_burst()` never blocks. `send_char`
@@ -268,8 +270,9 @@ POSIX TTY transport for hardware deployment over RS-232, USB-serial adapters, or
 
 | Function | Role |
 |----------|------|
-| `serial_transport_open(transport, device, baud)` | Open the device with `O_RDWR | O_NOCTTY | O_NONBLOCK`, save original `termios`, configure raw 8N1. |
-| `serial_transport_activate(transport)` | Set the module-level `transport_fd` to `fd`. Call before `snet_init()`. |
+| `serial_transport_open(transport, config)` | Open with `O_RDWR | O_NOCTTY | O_NONBLOCK`, save `termios`, and configure the requested raw line profile. |
+| `serial_transport_activate(transport)` | Select the active endpoint for libsquid hooks. Call before `snet_init()`. |
+| `serial_transport_wait(transport, timeout)` | Wait for RX/TX readiness and flush the userspace TX ring. |
 | `serial_transport_close(transport)` | Restore original `termios` settings and close the fd. |
 
 The client-side Spectrum counterpart lives in
@@ -289,6 +292,13 @@ All line parameters are passed via `serial_transport_config`. Terminal configura
 - `OPOST`, `ONLCR` cleared — raw output
 - `VMIN=0`, `VTIME=0` — non-blocking: return immediately with whatever is in the buffer
 
+`send_char` enqueues into a 4096-byte userspace ring, so one libsquid burst is
+accepted atomically even if the kernel TTY queue is temporarily full. With
+`CRTSCTS`, the kernel's UART/TTY driver dynamically stops TX when peer CTS is
+low and controls local RTS from receive-buffer pressure. `poll(2)` wakes the
+runtime immediately for input or output progress instead of sleeping on a
+fixed cadence.
+
 The original `termios` state is stored in `transport->saved_tty` and restored on `serial_transport_close()`.
 
 ### Transport selection in the runtime
@@ -301,11 +311,14 @@ serial_device is non-empty  →  build serial_transport_config from all serial_*
 serial_device is empty      →  local_transport_listen / accept / activate
 ```
 
-Both paths call `snet_init(&transport->base.platform, &squid_timing)` with the same timing constants, so the libsquid engine behaves identically regardless of the underlying physical link.
+Both paths call `snet_init(&transport->base.platform, &squid_timing)` with the same timing constants and configured payload offer, so the libsquid engine behaves identically regardless of the underlying physical link.
 
-### Module-level fd
+### Active transport state
 
-Both transports use a file-scope `static int transport_fd` to pass the active fd to the platform hook callbacks. This restricts the process to one active transport at a time — sufficient for the current single-connection server model. The libsquid `squid_platform_t` struct carries no user-data pointer, so this is the only viable approach without changing the platform API.
+The local transport uses a file-scope fd and the serial transport uses a
+file-scope pointer to its state. This restricts the process to one active
+transport at a time—sufficient for the current single-connection server model.
+The libsquid platform table has no user-data pointer.
 
 ---
 
@@ -405,11 +418,14 @@ The dispatch loop checks `keep_running` at the top of each iteration alongside `
 while (keep_running && snet_link_is_up()) {
     snet_burst();
     dispatch_received_packets(runtime);
-    usleep(5000);
+    snet_burst();
+    wait_for_transport(runtime); /* poll, maximum 20 ms */
 }
 ```
 
-`usleep(5000)` (5 ms) keeps the loop well within one 20 ms libsquid tick period while avoiding busy-spin. An alternative would be `sigsuspend()`, but that does not suit a polling protocol engine.
+The second burst gives a just-queued plugin response an immediate transmit
+turn. `poll(2)` wakes as soon as bytes arrive or queued serial output can move;
+its 20 ms timeout keeps the protocol clock serviced while a link is idle.
 
 The `volatile sig_atomic_t` type guarantees the flag is read atomically and that the compiler does not hoist the load out of the loop.
 
@@ -567,9 +583,6 @@ The following observations are informational — not bugs, but worth noting for 
 **`signal()` vs `sigaction()`**
 `install_signal_handlers()` uses `signal()`. On Linux with glibc, `signal()` uses BSD semantics, which is correct here. For strict POSIX portability and explicit control over `SA_RESTART`, `sigaction()` with `sa_flags = SA_RESTART` is preferred.
 
-**`usleep(5000)` polling**
-The dispatch loop polls with a fixed 5 ms sleep between iterations. This is adequate for the libsquid 20 ms tick period and avoids busy-spin, but does not react to link loss or signal delivery faster than 5 ms. An event-driven approach (e.g. `select()` or `poll()` on the transport fd) would reduce latency.
-
 **`strtok` in config parser**
 `strtok` modifies the buffer in place and is not reentrant. This is acceptable because config parsing is single-threaded and the buffer is local. If config parsing is ever moved to a thread, replace with `strtok_r`.
 
@@ -594,4 +607,3 @@ Both transports use a `static int transport_fd` because the libsquid `squid_plat
 | One client at a time | Both transports support a single connection; the local transport backlog is 1 |
 | No per-plugin error recovery | A plugin that crashes takes down the whole process; no sandboxing or isolation |
 | `signal()` portability | Replace with `sigaction()` for strict POSIX compliance |
-| Fixed poll interval | Replace `usleep(5000)` with `poll()`/`select()` on the transport fd for event-driven dispatch |

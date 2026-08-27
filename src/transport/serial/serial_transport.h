@@ -20,6 +20,7 @@
 #define SERVER_SERIAL_TRANSPORT_H
 
 #include <termios.h>
+#include <stddef.h>
 
 #include "transport/server_transport.h"
 
@@ -31,6 +32,9 @@
 #define serial_transport_default_baud     9600
 #define serial_transport_default_databits 8
 #define serial_transport_default_stopbits 1
+
+/* Enough room for many complete negotiated frames while CTS is low. */
+#define serial_transport_tx_capacity 4096U
 
 /* Parity constants (serial_transport_config.parity). */
 #define serial_parity_none  0
@@ -72,6 +76,9 @@ struct server_serial_transport {
     int stopbits;
     int flow;
     struct termios saved_tty;  /* original settings, restored on close */
+    unsigned char tx_queue[serial_transport_tx_capacity];
+    size_t tx_head;
+    size_t tx_count;
 };
 
 /*
@@ -91,6 +98,21 @@ int serial_transport_open(
  * before snet_init().
  */
 void serial_transport_activate(struct server_serial_transport *transport);
+
+/*
+ * Wait for input or queued-output readiness and flush queued output. The TTY
+ * driver performs RTS/CTS throttling when flow is serial_flow_rtscts.
+ * Returns poll(2)'s result, 0 on timeout/interrupted wait, or -1 on error.
+ */
+int serial_transport_wait(
+    struct server_serial_transport *transport,
+    int timeout_ms
+);
+
+/* Number of bytes awaiting acceptance by the kernel TTY output queue. */
+size_t serial_transport_pending_output(
+    const struct server_serial_transport *transport
+);
 
 /*
  * Restore the original terminal settings and close the file descriptor.

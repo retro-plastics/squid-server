@@ -47,6 +47,7 @@ int squid_client_spectrum_if1_open(
     spectrum_if1_timing.ack_delay_ticks = 0U;
     spectrum_if1_timing.ping_ticks = 0U;
     spectrum_if1_timing.max_retries = 3U;
+    spectrum_if1_timing.payload_bytes = SQUID_PAYLOAD_DEFAULT;
     squid_client_spectrum_if1_reset();
     snet_init(&spectrum_if1_platform, &spectrum_if1_timing);
 

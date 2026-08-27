@@ -26,6 +26,8 @@
 #include "transport/local/local_transport.h"
 
 #include <stdlib.h>
+#include <errno.h>
+#include <poll.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -202,6 +204,34 @@ void local_transport_activate(struct server_local_transport *transport)
     }
 
     transport_fd = transport->client_fd;
+}
+
+int local_transport_wait(
+    struct server_local_transport *transport,
+    int timeout_ms
+)
+{
+    struct pollfd descriptor;
+    int result;
+
+    if ((transport == NULL) || (transport->client_fd < 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    descriptor.fd = transport->client_fd;
+    descriptor.events = POLLIN;
+    descriptor.revents = 0;
+    do {
+        result = poll(&descriptor, 1U, timeout_ms);
+    } while ((result < 0) && (errno == EINTR));
+
+    if ((result > 0) &&
+        ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)) {
+        errno = EIO;
+        return -1;
+    }
+    return result;
 }
 
 void local_transport_close(struct server_local_transport *transport)

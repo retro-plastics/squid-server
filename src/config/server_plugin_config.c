@@ -191,7 +191,8 @@ void init_server_plugin_config_file(struct server_plugin_config_file *config_fil
     config_file->serial_databits = 8;
     config_file->serial_parity   = 0;   /* none */
     config_file->serial_stopbits = 1;
-    config_file->serial_flow     = 0;   /* none */
+    config_file->serial_flow     = 1;   /* RTS/CTS */
+    config_file->squid_payload   = server_squid_payload_default;
 }
 
 int parse_server_plugin_config_file(
@@ -398,6 +399,23 @@ int parse_server_plugin_config_file(
                 fclose(input);
                 return -1;
             }
+            continue;
+        }
+
+        if ((keyword != NULL) && (strcmp(keyword, "squid_payload") == 0)) {
+            uint8_t parsed_payload = 0;
+
+            if ((first_value == NULL) || (second_value != NULL) ||
+                (parse_port_number(first_value, &parsed_payload) != 0) ||
+                (parsed_payload < server_squid_payload_min) ||
+                (parsed_payload > server_squid_payload_max)) {
+                if (error_message != NULL) {
+                    *error_message = "squid_payload must be from 16 to 112";
+                }
+                fclose(input);
+                return -1;
+            }
+            config_file->squid_payload = (int)parsed_payload;
             continue;
         }
 

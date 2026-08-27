@@ -35,6 +35,11 @@
 /* Maximum byte length of a serial device path (including NUL). */
 #define server_serial_device_path_max 64
 
+/* Squid DATA payload negotiation limits. */
+#define server_squid_payload_min 16
+#define server_squid_payload_max 112
+#define server_squid_payload_default server_squid_payload_max
+
 /* One "plugin <port> <path>" line from the config file. */
 struct server_plugin_mapping {
     uint8_t port_number;
@@ -55,6 +60,7 @@ struct server_plugin_config_file {
     int  serial_parity;    /* 0=none  1=even  2=odd */
     int  serial_stopbits;  /* 1 or 2 */
     int  serial_flow;      /* 0=none  1=rtscts  2=xonxoff */
+    int  squid_payload;    /* negotiated DATA offer: 16..112 bytes */
 };
 
 /* Zero-initialise and set defaults for a config struct. */
