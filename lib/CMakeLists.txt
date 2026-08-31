@@ -4,7 +4,7 @@ set(LIBSQUID_SOURCE_DIR "" CACHE PATH
     "Use a local libsquid source tree instead of downloading a release"
 )
 set(LIBSQUID_GIT_TAG
-    "50039278d4f74f24891e6e78166f2cee96f3a316"
+    "f527a7cff2165ac664bda146a5d94855b664eed7"
     CACHE STRING
     "libsquid revision to fetch when no local source tree is available"
 )

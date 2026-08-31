@@ -109,7 +109,8 @@ the same public headers and reuse one caller-owned workspace. Include
 a small Z80 program's dependency explicit.
 
 Libsquid v2 already carries a complete `squid_send()` block across as many
-16-byte DATA frames as needed and lets `squid_recv()` cross frame boundaries.
+negotiated-size DATA frames as needed and lets `squid_recv()` cross frame
+boundaries.
 The client library therefore never fragments wire blocks itself. It only hides
 squid-server's one-byte packet envelope, which remains necessary on top of
 libsquid's byte-stream receive semantics.
@@ -124,8 +125,9 @@ cmake --build build --target squid-client-z80
 ```
 
 The Spectrum archive additionally contains a 115,200-baud software serial
-platform for a 48K Spectrum with Interface 1. It uses RTS/CTS and 8N2. The
-cycle-counted receiver and its 20-byte overrun buffer are adapted from Tomaž
+platform for a 48K Spectrum with Interface 1. It uses RTS/CTS, 8N2, and the
+compatible 16-byte Squid payload. The cycle-counted receiver and its 20-byte
+compact-frame overrun buffer are adapted from Tomaž
 Štih's *The YX Kernel for ZX Spectrum* thesis and the corresponding
 [YX send](https://github.com/retro-vault/yx/blob/master/os/ram/ssend115k.s) and
 [receive](https://github.com/retro-vault/yx/blob/master/os/ram/srecv115k.s) sources.

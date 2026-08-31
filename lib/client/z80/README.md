@@ -2,7 +2,7 @@
 
 `libsquid_client.a` is a normal Z80 C library with public functions for every
 squid-server plugin. Applications do not construct protocol packets or manage
-16-byte wire blocks.
+negotiated-size wire blocks.
 
 Use the umbrella header:
 

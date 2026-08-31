@@ -41,7 +41,13 @@
  */
 #define ECHO_CHANNEL 1
 
-static const squid_timing_t timing = { 6U, 0U, 0U, 3U, 0U };
+static const squid_timing_t timing = {
+    .timeout_ticks = 6U,
+    .ack_delay_ticks = 0U,
+    .ping_ticks = 0U,
+    .max_retries = 3U,
+    .payload_bytes = SQUID_PAYLOAD_MAX
+};
 
 static int pump_squid(void *context)
 {

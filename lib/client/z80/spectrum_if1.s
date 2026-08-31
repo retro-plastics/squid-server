@@ -122,8 +122,9 @@ _squid_client_spectrum_if1_send_char::
         ld      de,#0
         ret
 
-;; Refill the private 20-byte buffer. The host may finish a complete UART
-;; FIFO after CTS changes, and one maximum libsquid wire frame is 20 bytes.
+;; Refill the private 20-byte buffer. The host may finish a complete UART FIFO
+;; after CTS changes. This backend explicitly negotiates the compatible
+;; 16-byte payload, whose compact libsquid wire frame is at most 20 bytes.
 if1_receive_refill:
         call    if1_disable_interrupts
         xor     a

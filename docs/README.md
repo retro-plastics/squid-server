@@ -277,8 +277,9 @@ POSIX TTY transport for hardware deployment over RS-232, USB-serial adapters, or
 
 The client-side Spectrum counterpart lives in
 `lib/client/z80/spectrum_if1.s`. It bit-bangs Interface 1 at 115200-8-N-2,
-buffers one complete 20-byte libsquid wire frame during CTS overrun, and is
-included only in the Spectrum client archive. The server profile is
+explicitly offers the compatible 16-byte Squid payload, buffers its complete
+20-byte compact wire frame during CTS overrun, and is included only in the
+Spectrum client archive. The server profile is
 `opt/squid/etc/squid_server_spectrum.conf`.
 
 All line parameters are passed via `serial_transport_config`. Terminal configuration applied by `configure_port()`:
@@ -515,10 +516,10 @@ The registry holds `const struct server_plugin *` pointers. The plugin structs a
 
 ### `lib/CMakeLists.txt`
 
-Queries GitHub's releases API at configure time, then fetches the latest
-non-prerelease `libsquid` tag via `FetchContent`. The sources are compiled with
-`SQUID_MAX_SOCKETS=15` so every application channel remains available. The
-resulting library target is exposed as `squid` for linking.
+Uses a sibling `../libsquid` checkout when present; otherwise it fetches the
+revision pinned by `LIBSQUID_GIT_TAG` via `FetchContent`. The sources are
+compiled with `SQUID_MAX_SOCKETS=15` so every application channel remains
+available. The resulting library target is exposed as `squid` for linking.
 
 ### `src/CMakeLists.txt`
 

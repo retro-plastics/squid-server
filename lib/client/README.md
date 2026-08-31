@@ -154,8 +154,9 @@ device path. It is not the AY-port implementation used by later 128K models.
 Libsquid's CRC, acknowledgements, and retransmission provide the error recovery
 that the original 115,200-baud design expects at this marginal bit rate.
 
-The cycle-counted bit-banging and 20-byte receive burst follow Tomaž Štih's
-*The YX Kernel for ZX Spectrum* thesis, sections 9.3.1-9.3.7. The original
+The cycle-counted bit-banging and 20-byte receive burst support the backend's
+explicit 16-byte Squid payload and follow Tomaž Štih's *The YX Kernel for ZX
+Spectrum* thesis, sections 9.3.1-9.3.7. The original
 [send](https://github.com/retro-vault/yx/blob/master/os/ram/ssend115k.s) and
 [receive](https://github.com/retro-vault/yx/blob/master/os/ram/srecv115k.s) sources
 are available in the YX repository.
